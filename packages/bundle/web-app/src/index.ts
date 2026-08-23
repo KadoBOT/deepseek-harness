@@ -263,6 +263,12 @@ export function apply(ctx: Context, config: Config): void {
       const port = ctx.webServer.port
       if (config.printUrl) {
         console.log(`dsh web: ${webUrl}${lanCandidate === undefined ? '' : ` (LAN: http://${lanCandidate}:${String(port)})`}`)
+        // The all-interfaces bind is the operator's exposure decision; state its
+        // cost once next to the URL they will act on. The fence defends against
+        // browser-borne rebinding and cross-site requests, not against peers.
+        if (runtime.lanAddresses.length > 0) {
+          console.log('dsh web warning: serving every interface unauthenticated — anyone who can reach this port can drive this harness')
+        }
       }
       if (handoffBrowser) {
         console.log('dsh web: opening the default browser; pass --no-open to disable')

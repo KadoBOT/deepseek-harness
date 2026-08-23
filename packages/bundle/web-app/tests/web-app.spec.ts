@@ -128,10 +128,13 @@ describe('web-app runtime glue', () => {
       trustedHosts: ['192.168.1.5', 'lab.internal'],
     })
     expect(log).toHaveBeenCalledWith('dsh web: http://127.0.0.1:4567 (LAN: http://192.168.1.5:4567)')
+    // The all-interfaces bind announces its unauthenticated exposure once.
+    expect(log).toHaveBeenCalledWith('dsh web warning: serving every interface unauthenticated — anyone who can reach this port can drive this harness')
     expect(log).toHaveBeenCalledWith('dsh web: opening the default browser; pass --no-open to disable')
     expect(openBrowser).toHaveBeenCalledWith('http://127.0.0.1:4567')
     expect(lifecycle).toEqual([
       'dsh web: http://127.0.0.1:4567 (LAN: http://192.168.1.5:4567)',
+      'dsh web warning: serving every interface unauthenticated — anyone who can reach this port can drive this harness',
       'dsh web: opening the default browser; pass --no-open to disable',
       'open:http://127.0.0.1:4567',
     ])
