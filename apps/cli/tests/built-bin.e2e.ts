@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { request as httpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -59,6 +60,18 @@ async function waitForFile(file: string): Promise<void> {
     if (Date.now() >= deadline) throw new Error(`dsh profile lifecycle marker did not appear: ${file}`)
     await new Promise(resolve => setTimeout(resolve, 20))
   }
+}
+
+/** GET status from the wildcard-bound server while forcing an arbitrary Host authority. */
+function statusOf(port: number, path: string, host: string): Promise<number> {
+  return new Promise((resolveStatus, rejectStatus) => {
+    const request = httpRequest({ host: '127.0.0.1', port, path, method: 'GET', headers: { host } }, (response) => {
+      response.resume()
+      resolveStatus(response.statusCode ?? 0)
+    })
+    request.once('error', rejectStatus)
+    request.end()
+  })
 }
 
 interface ProfileLifecycleFixture {
@@ -356,14 +369,14 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
       expect(web.stdout).toContain('--port <port>')
       expect(web.stdout).not.toContain('dsh web: http://')
 
-      const wildcardHost = await runBuiltBin(['web', '--host', '0.0.0.0'], {
+      const badHost = await runBuiltBin(['web', '--host', '192.168.1.5'], {
         DSH_HOME: home,
         DSH_TELEMETRY_DISABLED: '1',
       })
-      expect(wildcardHost.code).toBe(1)
-      expect(wildcardHost.stdout).toBe('')
-      expect(wildcardHost.stderr).toContain('--host 0.0.0.0 is intentionally not supported yet for safety: it would expose remote code execution to the network; use 127.0.0.1 instead')
-      expect(wildcardHost.stderr).not.toContain('dsh web: http://')
+      expect(badHost.code).toBe(1)
+      expect(badHost.stdout).toBe('')
+      expect(badHost.stderr).toContain('--host must be 127.0.0.1 or 0.0.0.0')
+      expect(badHost.stderr).not.toContain('dsh web: http://')
 
       const headlessHelp = await runBuiltBin(['--profile', 'headless', '--help'], {
         DSH_HOME: home,
@@ -562,6 +575,63 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
       rmSync(home, { recursive: true, force: true })
     }
   }, SPAWN_TIMEOUT_MS + 30_000)
+
+  it('serves every interface with --host 0.0.0.0 behind the /api trust fence', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'dsh-built-web-lan-'))
+    const child = execa(process.execPath, [dshBin, 'web', '--host', '0.0.0.0', '--port', '0'], {
+      cwd: home,
+      input: '',
+      killSignal: 'SIGKILL',
+      reject: false,
+      buffer: false,
+      env: Object.fromEntries(
+        Object.entries({ ...process.env, DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1' })
+          .filter((entry): entry is [string, string] => entry[1] !== undefined),
+      ),
+      extendEnv: false,
+    })
+    try {
+      const out = await new Promise<string>((resolveReady, rejectReady) => {
+        let collected = ''
+        let flushed = false
+        const timer = setTimeout(() => {
+          child.kill('SIGKILL')
+          rejectReady(new Error('wildcard dsh web not ready in 25s; output:\n' + collected))
+        }, 25_000)
+        const onData = (chunk: Buffer): void => {
+          collected += chunk.toString()
+          // The URL line carries the loopback readiness signal plus the sampled LAN literal;
+          // the exposure warning follows in the same print burst, so settle one beat later.
+          if (!flushed && /dsh web: http:\/\/127\.0\.0\.1:\d+ \(LAN: http:\/\/\d+\.\d+\.\d+\.\d+:\d+\)/.test(collected)) {
+            flushed = true
+            clearTimeout(timer)
+            setTimeout(() => { resolveReady(collected) }, 300)
+          }
+        }
+        child.stdout?.on('data', onData)
+        child.stderr?.on('data', onData)
+        void child.then((result) => {
+          clearTimeout(timer)
+          rejectReady(new Error('wildcard dsh web exited early (' + String(result.exitCode) + '); stdout:\n' + collected + '\nstderr:\n' + result.stderr))
+        }, () => {})
+      })
+      expect(out).toContain('dsh web warning: serving every interface unauthenticated')
+      const port = Number(/dsh web: http:\/\/127\.0\.0\.1:(\d+)/.exec(out)![1]!)
+      const lanAddress = / \(LAN: http:\/\/(\d+\.\d+\.\d+\.\d+):\d+\)/.exec(out)![1]!
+      expect(await statusOf(port, '/', '127.0.0.1:' + String(port))).toBe(200)
+      // A rebound or foreign Host authority is refused before any handler runs.
+      expect(await statusOf(port, '/api/session.list', 'evil.example')).toBe(403)
+      // The machine's own sampled LAN literal passes the Host fence (the endpoint
+      // itself may still answer 404 for a GET).
+      expect(await statusOf(port, '/api/session.list', lanAddress + ':' + String(port))).not.toBe(403)
+    } finally {
+      // A server that reached readiness is still running; one that died early
+      // makes the kill a no-op and the await return the recorded result.
+      child.kill('SIGTERM')
+      await child
+      rmSync(home, { recursive: true, force: true })
+    }
+  }, 40_000)
 
   it('runs the headless profile through its app-owned task positional', async () => {
     const apiKey = 'built-dsh-headless-key'

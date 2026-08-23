@@ -278,6 +278,12 @@ export function apply(ctx: Context, config: Config): void {
         ANNOUNCED_ROOTS.add(connectionCtx.root)
         if (config.printUrl) {
           console.log(`dsh web: ${authenticatedUrl}${lanUrl === undefined ? '' : ` (LAN: ${lanUrl})`}`)
+          // The all-interfaces bind is the operator's exposure decision; state its
+          // cost once next to the URL they will act on. The fence defends against
+          // browser-borne rebinding and cross-site requests, not against peers.
+          if (runtime.lanAddresses.length > 0) {
+            console.log('dsh web warning: serving every interface unauthenticated — anyone who can reach this port can drive this harness')
+          }
         }
         if (handoffBrowser) {
           console.log('dsh web: opening the default browser; pass --no-open to disable')
