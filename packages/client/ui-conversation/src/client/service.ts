@@ -59,11 +59,29 @@ export interface IConversation {
   loadOlder(): Promise<void>
 }
 
+/**
+ * RFC 4122 version 4 UUID that also works on insecure origins, where
+ * `crypto.randomUUID` is absent — a page served over plain HTTP from a
+ * non-loopback address (LAN IP binding) is one such origin.
+ * @returns one lowercase hyphenated UUID string.
+ */
+function draftAttachmentUuid(): string {
+  const direct = (crypto as { randomUUID?: () => string }).randomUUID
+  if (typeof direct === 'function') return direct.call(crypto)
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  view.setUint8(6, (view.getUint8(6) & 0x0f) | 0x40)
+  view.setUint8(8, (view.getUint8(8) & 0x3f) | 0x80)
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
 /** Create one browser-only draft descriptor; only its id enters input state. */
 function browserDraftAttachment(file: File): ComposerAttachment {
   return {
     kind: 'image',
-    id: crypto.randomUUID() as DraftAttachmentId,
+    // crypto.randomUUID is secure-context-gated; LAN-IP pages are insecure.
+    id: draftAttachmentUuid() as DraftAttachmentId,
     previewUrl: URL.createObjectURL(file),
     file,
   }

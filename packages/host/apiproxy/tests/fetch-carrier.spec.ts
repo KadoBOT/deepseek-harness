@@ -803,3 +803,34 @@ describe('resolveBase', () => {
     }
   })
 })
+
+describe('mintRpcId', () => {
+  it('keeps minting when crypto.randomUUID is absent (insecure browser origins)', async () => {
+    class Probe extends AbstractApiClient {
+      ids: string[] = []
+      protected async doFetch(_input: URL): Promise<Response> {
+        return Response.json({ type: 'server-response', rpcId: this.lastMinted, result: { ok: true, value: { items: [] } } })
+      }
+
+      lastMinted = ''
+      protected override mintRpcId(): ReturnType<AbstractApiClient['mintRpcId']> {
+        const id = super.mintRpcId()
+        this.lastMinted = id
+        this.ids.push(id)
+        return id
+      }
+    }
+    // A page served over plain HTTP from a non-loopback address (LAN IP
+    // binding) runs in an insecure context where crypto.randomUUID is absent.
+    const globalWithCrypto = globalThis as { crypto: Crypto }
+    const originalRandomUUID = globalWithCrypto.crypto.randomUUID
+    Reflect.deleteProperty(globalWithCrypto.crypto, 'randomUUID')
+    try {
+      const probe = new Probe()
+      await probe.sessions.list({})
+      expect(probe.ids[0]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    } finally {
+      Object.defineProperty(globalWithCrypto.crypto, 'randomUUID', { value: originalRandomUUID, configurable: true, writable: true })
+    }
+  })
+})
