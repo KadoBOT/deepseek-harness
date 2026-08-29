@@ -612,7 +612,7 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
         child.stderr?.on('data', onData)
         void child.then((result) => {
           clearTimeout(timer)
-          rejectReady(new Error('wildcard dsh web exited early (' + String(result.exitCode) + '); stdout:\n' + collected + '\nstderr:\n' + result.stderr))
+          rejectReady(new Error('wildcard dsh web exited early (' + String(result.exitCode) + '); stdout:\n' + collected + '\nstderr:\n' + String(result.stderr)))
         }, () => {})
       })
       expect(out).toContain('dsh web warning: serving every interface unauthenticated')

@@ -2,7 +2,7 @@
 
 English | [中文](session-title.zh.md)
 
-Durable latest-wins title state and the optional asynchronous provider vocabulary owned by [`@deepseek-ai/dsh-session-title`](../../packages/session/session-title). The shared LLM helper owns the exact auxiliary request record. Package READMEs own timing, fallback, failure, and fork behavior; the generated [persistence catalog](../persistence-catalog.md) owns the complete event declarations.
+Durable latest-wins title state and the optional asynchronous provider vocabulary owned by [`@deepseek-ai/dsh-session-title`](../../packages/session/session-title). The shared LLM helper owns the exact auxiliary request record and the model-backed brief generation that produces a name plus a one-sentence summary. Package READMEs own timing, fallback, failure, and fork behavior; the generated [persistence catalog](../persistence-catalog.md) owns the complete event declarations.
 
 Sources: [`packages/session/session-title/src/index.ts`](../../packages/session/session-title/src/index.ts), [`packages/session/session-title-llm/src/index.ts`](../../packages/session/session-title-llm/src/index.ts)
 
@@ -61,6 +61,18 @@ interface SessionTitleSnapshot extends SessionTitleEventData {
   readonly updatedAt: number
 }
 ```
+
+```ts type-equiv
+/** Payload of the log-only `session/summary` event. */
+interface SessionSummaryEventData {
+  /** Normalized non-empty summary text. */
+  readonly summary: string
+  /** Exact human `user/message` seqs used to derive this summary. */
+  readonly messageSeqs: SessionSeq[]
+}
+```
+
+Brief providers append `session/summary` immediately before returning their result; the service then appends the provider title. The projection keys `title` and `summary`, declared in [`@deepseek-ai/dsh-session-title/src/types.ts`](../../packages/session/session-title/src/types.ts), carry both values to clients through the standard projection merge.
 
 ## Auxiliary request record
 

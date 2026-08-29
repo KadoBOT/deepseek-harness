@@ -312,6 +312,19 @@
   overflow-wrap: break-word;
 }
 
+/* Model-written session summary: muted body text under the title, clamped so
+   a long one-sentence brief cannot dominate the card. */
+.hoverSummary {
+  font-size: 12px;
+  line-height: 16px;
+  color: #CFD3D6;
+  overflow-wrap: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+
 .hoverPath {
   font-size: 12px;
   line-height: 16px;

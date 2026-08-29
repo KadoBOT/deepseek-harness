@@ -241,6 +241,13 @@
     - id: ui-workspace
       name: '@deepseek-ai/dsh-client-ui-workspace'
 
+    # Sidebar browsing region variant: hoists running, waiting-on-user, and
+    # finished-unseen sessions into one Active section above the workspace
+    # groups by shadowing the stock browser cell (lowest priority renders).
+    # Remove this entry to restore the stock browser.
+    - id: ui-active-sessions
+      name: '@deepseek-ai/dsh-client-ui-active-sessions'
+
     # Input triggers: the '/' | '@' pipeline (ui-input-trigger), the command surface over
     # it (ui-commands), and the reference sources (ui-skill / ui-reference).
     - id: ui-input-trigger

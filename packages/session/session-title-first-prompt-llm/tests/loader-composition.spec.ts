@@ -21,7 +21,7 @@ class LoaderAdapter extends LlmAdapter {
 
   override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     this.requests.push(options)
-    yield { type: 'text-delta', index: 0, text: 'Loader composed title' }
+    yield { type: 'text-delta', index: 0, text: '{"name": "Loader composed title", "summary": "Names the session through the Loader composition."}' }
     yield { type: 'finish', reason: { kind: 'stop' } }
   }
 }
@@ -49,8 +49,11 @@ async function loadComposition(): Promise<Context> {
     '  config:',
     '    targetWords: 5',
     '    targetCjkCharacters: 10',
+    '    targetSummaryWords: 20',
+    '    targetSummaryCjkCharacters: 40',
     '    maxInputBytes: 1000',
     '    maxOutputTokens: 32',
+    '    maxSummaryBytes: 256',
     '    timeoutMs: 1000',
     "    provider: 'title-route'",
     "    model: 'title-model'",
@@ -118,5 +121,9 @@ describe('session-title Loader composition', () => {
         model: { provider: 'title-route', model: 'title-model' },
       },
     })
+    // The Loader-composed brief appends its durable summary beside the provider title.
+    const summary = session.events.findLast(event => event.type === 'session/summary')
+    expect(summary && summary.type === 'session/summary' ? summary.data.summary : undefined)
+      .toBe('Names the session through the Loader composition.')
   })
 })

@@ -9,7 +9,9 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-`dsh-session-title-llm` runs model-backed title generation through one shared policy: it resolves the auxiliary route, frames the exact selected human messages as JSON, enforces input and output budgets, composes timeout and caller cancellation, and validates the model's output before a title is accepted. It is a library, not a Cordis plugin — the shipped provider plugins call `registerSessionTitleLlmProvider()` with their cadence and message selector, and the helper validates shared config and delegates every revision to one generation path, so registration, route, prompt, cancellation, and validation behavior cannot drift between them. Deployments configure it through the provider plugins, which require every limit. The route, failure, and configuration contracts come first; the request internals live in a collapsible developer section below.
+Shared implementation policy for model-backed session-title and session-brief providers. It resolves the auxiliary route, frames exact selected human messages as JSON, records the exact dispatchable request, applies a language-aware instruction, enforces input and output budgets, composes timeout and caller cancellation, assembles the stream, and returns normalized text with exact source seqs plus the provider/model route used to generate it.
+
+This package is a library, not a Cordis plugin. Provider plugins call one registrar with their cadence and message selector: `registerSessionTitleLlmProvider()` for plain titles via `generateSessionTitleWithLlm()`, or `registerSessionBriefLlmProvider()` for briefs via `generateSessionBriefWithLlm()`. The brief variant asks the model for one JSON object `{"name": "...", "summary": "..."}` on a single line, returns the parsed name as the title, appends a log-only `session/summary` event carrying the truncated summary before returning, and registers the `summary` projection unit so clients receive both values through the standard projection merge. Registration, route, prompt, cancellation, and validation behavior cannot drift between providers.
 
 ## Table of Contents
 
@@ -39,7 +41,9 @@ A provider plugin calls `registerSessionTitleLlmProvider(ctx, config, id, automa
 
 <a id="configuration"></a>
 
-Every field is required except the paired route override; there are no library defaults.
+Every field is required except the paired route override; there are no library defaults. The title configuration is the base; the brief configuration adds three summary limits.
+
+### Title configuration (`SessionTitleLlmConfig`)
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -49,6 +53,14 @@ Every field is required except the paired route override; there are no library d
 | `maxOutputTokens` | required | Auxiliary generation token cap |
 | `timeoutMs` | required | End-to-end deadline within the runtime timer limit |
 | `provider`, `model` | optional | Explicit route; both or neither |
+
+### Brief configuration additions (`SessionBriefLlmConfig`)
+
+| Key | Contract |
+|---|---|
+| `targetSummaryWords` | Positive target word count for non-CJK summaries. |
+| `targetSummaryCjkCharacters` | Positive target character count for Chinese, Japanese, or Korean summaries. |
+| `maxSummaryBytes` | Positive UTF-8 byte ceiling applied to the accepted summary after truncation; truncation never splits a code point. |
 
 -----
 
@@ -102,7 +114,7 @@ The title model receives a fixed system instruction to return one concise unador
 
 #### Token effect
 
-The auxiliary request consumes tokens according to selected input size and `maxOutputTokens`. It is separate from the main agent request and does not add title text or framing to agent history. DeepSeek title calls disable thinking; the main conversation retains its configured thinking mode.
+The auxiliary request consumes tokens according to selected input size and `maxOutputTokens`. It is separate from the main agent request and does not add title text or framing to agent history. DeepSeek title calls disable thinking; when deployment routes an auxiliary call to a reasoning model instead, the visible answer shares `maxOutputTokens` with the model's reasoning trace, so the cap must be sized for trace plus full response on the worst route that can serve the row — an under-sized cap fails every call with a max-tokens finish.
 
 #### KV Cache effect
 

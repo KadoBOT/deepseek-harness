@@ -1,8 +1,8 @@
 /**
- * Pure types of the title domain: the ONE home of the `title` projection-key
- * declaration, free of this package's host-side value imports (cordis
- * service, schemastery, the llm seam). Two namespace projections serve it —
- * `./types` for host consumers and `./client/types` for client aggregates —
+ * Pure types of the title domain: the ONE home of the `title` and `summary`
+ * projection-key declarations, free of this package's host-side value imports
+ * (cordis service, schemastery, the llm seam). Two namespace projections serve
+ * it — `./types` for host consumers and `./client/types` for client aggregates —
  * with zero content duplication.
  *
  * @module @deepseek-ai/dsh-session-title/types
@@ -47,6 +47,14 @@ export interface SessionTitleEventData {
   readonly source: SessionTitleSource
 }
 
+/** Payload of the log-only `session/summary` event. */
+export interface SessionSummaryEventData {
+  /** Normalized non-empty summary text. */
+  readonly summary: string
+  /** Exact human `user/message` seqs used to derive this summary. */
+  readonly messageSeqs: SessionSeq[]
+}
+
 /** Latest folded title plus the title event's durable envelope facts. */
 export interface SessionTitleSnapshot extends SessionTitleEventData {
   /** Seq of the latest `session/title` event. */
@@ -82,6 +90,8 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
     title: string | null
     /** Eligible human title input. */
     titleInput: TitleInputState
+    /** Latest logged summary text, or null. */
+    summary: string | null
   }
   interface SessionProjectionMap {
     /**
@@ -90,5 +100,12 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
      * plain string: the shape the client list rows consume.
      */
     title: string | null
+    /**
+     * The session's current model-written one-sentence description — the
+     * latest `session/summary` event's text (last-wins), or `null` before a
+     * brief provider lands. A plain string: the shape the client hover cards
+     * consume.
+     */
+    summary: string | null
   }
 }

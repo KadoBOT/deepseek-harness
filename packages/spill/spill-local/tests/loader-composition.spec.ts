@@ -8,7 +8,7 @@ import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
@@ -18,12 +18,18 @@ const DAY_MS = 24 * 60 * 60 * 1000
 
 let root: string | undefined
 let context: Context | undefined
+let originalUmask: number
+
+beforeEach(() => {
+  originalUmask = process.umask(0o077)
+})
 
 afterEach(async () => {
   await context?.fiber.dispose()
   context = undefined
   if (root !== undefined) await rm(root, { recursive: true, force: true })
   root = undefined
+  process.umask(originalUmask)
 })
 
 describe('spill-local real Loader composition through cordis.yml', () => {

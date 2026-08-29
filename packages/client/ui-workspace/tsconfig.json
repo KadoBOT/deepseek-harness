@@ -9,43 +9,46 @@
   ],
   "references": [
     {
+      "path": "../../../vendor/cordis"
+    },
+    {
+      "path": "../../api/remotes/tsconfig.client.json"
+    },
+    {
       "path": "../../api/session-controller/tsconfig.client.json"
     },
     {
       "path": "../../api/workspace-controller/tsconfig.client.json"
     },
     {
-      "path": "../locale"
-    },
-    {
-      "path": "../../../vendor/cordis"
-    },
-    {
-      "path": "../ui-slots"
-    },
-    {
-      "path": "../ui-primitives"
-    },
-    {
-      "path": "../connection/tsconfig.client.json"
-    },
-    {
-      "path": "../../api/remotes/tsconfig.client.json"
-    },
-    {
-      "path": "../store"
-    },
-    {
       "path": "../../core/session"
+    },
+    {
+      "path": "../../runtime-diagnostics/invariants"
     },
     {
       "path": "../../schedule/schedule"
     },
     {
-      "path": "../ui-sidebar"
+      "path": "../../session/session-title"
+    },
+    {
+      "path": "../../util/workspace-path"
+    },
+    {
+      "path": "../connection/tsconfig.client.json"
+    },
+    {
+      "path": "../locale"
+    },
+    {
+      "path": "../store"
     },
     {
       "path": "../ui-conversation"
+    },
+    {
+      "path": "../ui-primitives"
     },
     {
       "path": "../ui-renderer"
@@ -54,7 +57,10 @@
       "path": "../ui-session"
     },
     {
-      "path": "../../util/workspace-path"
+      "path": "../ui-sidebar"
+    },
+    {
+      "path": "../ui-slots"
     }
   ]
 }

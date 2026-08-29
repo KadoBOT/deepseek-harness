@@ -90,6 +90,10 @@ Titles are durable, log-only state: every accepted revision is a `session/title`
 
 Per-session work state tracks a revision counter, an in-flight fallback, and pending and active provider work. A newer user message, provider disposal, session disposal, or explicit refresh aborts older work through an `AbortController`; a completion whose provider, revision, session, or signal is stale cannot append. Explicit refreshes reserve their revision before provider work; overlapping automatic and explicit fallback requests share one session-local in-flight append. Service teardown cancels queued work and drains calls that ignore cancellation before unloading completes.
 
+### Provider contract
+
+A provider supplies a branded stable id, automatic mode (`first-prompt` or `all-prompts`), and `generate(request)`. The request carries the live session, all eligible messages through one fixed revision, the current logged main-request route when available, and cancellation. The result identifies a non-empty title, unique ordered source-message seqs from that request, and the optional provider/model route used to generate it. A brief provider may also append one log-only `session/summary` event — accepted before the title it accompanies — carrying a one-sentence summary and the same source seqs. The service normalizes and validates the title before it becomes durable; the summary projection keys `title` and `summary`, declared in this package's [`src/types.ts`](src/types.ts), carry both values to clients.
+
 ### Normalization
 
 Accepted titles are cleaned of terminal control sequences, directional and invisible controls, and non-whitespace C0/C1 controls; whitespace is normalized, and truncation to the byte caps never splits a Unicode code point. The deterministic fallback takes the first eligible message's leading words within `fallbackMaxWords` and `fallbackMaxBytes`.
@@ -122,7 +126,7 @@ Nothing. `session/title` is log-only and never enters the session surface, `deri
 
 #### Token effect
 
-The fallback and accepted provider revisions add zero tokens to the main agent request. An optional provider's separate auxiliary request is documented by that provider package.
+The fallback, accepted provider revisions, and summary events add zero tokens to the main agent request. An optional provider's separate auxiliary request is documented by that provider package.
 
 #### KV Cache effect
 

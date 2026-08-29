@@ -2,7 +2,7 @@
 
 [English](session-title.md) | 中文
 
-[`@deepseek-ai/dsh-session-title`](../../packages/session/session-title) 所拥有的持久、后写覆盖的标题状态与可选异步提供方词汇。共享 LLM（大语言模型）辅助组件负责精确的辅助请求记录。各包 README 负责时序、回退、失败与 fork 行为；生成的[持久化日志事件目录](../persistence-catalog.zh.md)负责完整的事件声明。
+[`@deepseek-ai/dsh-session-title`](../../packages/session/session-title) 所拥有的持久、后写覆盖的标题状态与可选异步提供方词汇。共享 LLM（大语言模型）辅助组件负责精确的辅助请求记录，以及生成名称加一句话摘要的模型侧 brief 生成。各包 README 负责时序、回退、失败与 fork 行为；生成的[持久化日志事件目录](../persistence-catalog.zh.md)负责完整的事件声明。
 
 源码：[`packages/session/session-title/src/index.ts`](../../packages/session/session-title/src/index.ts)、[`packages/session/session-title-llm/src/index.ts`](../../packages/session/session-title-llm/src/index.ts)
 
@@ -61,6 +61,18 @@ interface SessionTitleSnapshot extends SessionTitleEventData {
   readonly updatedAt: number
 }
 ```
+
+```ts type-equiv
+/** Payload of the log-only `session/summary` event. */
+interface SessionSummaryEventData {
+  /** Normalized non-empty summary text. */
+  readonly summary: string
+  /** Exact human `user/message` seqs used to derive this summary. */
+  readonly messageSeqs: SessionSeq[]
+}
+```
+
+brief 提供方会在返回结果前立即写入 `session/summary`；服务随后再写入提供方标题。投影键 `title` 与 `summary` 声明于 [`@deepseek-ai/dsh-session-title/src/types.ts`](../../packages/session/session-title/src/types.ts)，通过标准投影合并把两个值送达客户端。
 
 ## 辅助请求记录
 

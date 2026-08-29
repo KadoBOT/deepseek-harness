@@ -48,6 +48,7 @@ const LINK_MAP: Record<string, string> = {
   TurnTrigger: 'subsystems/session.md',
   TurnEndReason: 'subsystems/session.md',
   SessionTitleEventData: 'subsystems/session-title.md',
+  SessionSummaryEventData: 'subsystems/session-title.md',
   SessionTitleLlmRequestEventData: 'subsystems/session-title.md',
   SessionTitleModelProvenance: 'subsystems/session-title.md',
   SessionTitleProviderId: 'subsystems/session-title.md',

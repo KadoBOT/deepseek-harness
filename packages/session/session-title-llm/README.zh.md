@@ -9,7 +9,9 @@ kind: "package-library"
 
 ## 概述
 
-`dsh-session-title-llm` 让模型支持的标题生成都经过同一份共享策略：它解析辅助路由，把精确选中的用户消息封装为 JSON，强制执行输入与输出预算，组合超时与调用方取消，并在标题被接受前校验模型输出。它是普通库而非 Cordis 插件——随附提供方插件以各自的节奏与消息选择器调用 `registerSessionTitleLlmProvider()`，该辅助函数验证共享配置并把每次修订委托给同一条生成路径，因此注册、路由、提示词、取消与校验行为不会在它们之间漂移。部署方通过要求所有上限的提供方插件来配置它。路由、失败与配置约定在前；请求内部细节放在下方可折叠的开发者章节中。
+由模型支持的会话标题与会话 brief 提供方的共享实现策略。它解析辅助路由，将精确选中的用户消息封装为 JSON，记录可分发的确切请求，应用语言感知指令，强制执行输入和输出预算，组合超时与调用方取消，组装流，并返回规范化文本，同时给出确切来源 seq 以及生成该文本时使用的提供方／模型路由。
+
+此包是普通库，不是 Cordis 插件。提供方插件调用其中一个注册函数，传入各自节奏与消息选择器：纯标题用 `registerSessionTitleLlmProvider()`（委派给 `generateSessionTitleWithLlm()`），brief 用 `registerSessionBriefLlmProvider()`（委派给 `generateSessionBriefWithLlm()`）。brief 变体要求模型在单行返回一个 JSON 对象 `{"name": "...", "summary": "..."}`，把解析出的名称作为标题返回，并在返回前追加携带截断后摘要的仅日志事件 `session/summary`，同时注册 `summary` 投影单元，使客户端通过标准投影合并同时收到两个值。各插件的注册、路由、提示词、取消与验证行为不会漂移。
 
 ## 目录
 
@@ -39,7 +41,9 @@ kind: "package-library"
 
 <a id="configuration"></a>
 
-除成对的路由覆盖项外，每个字段都必填；库不提供默认值。
+除成对的路由覆盖项外，每个字段都必填；库不提供默认值。标题配置是基础；brief 配置在其上增加三个摘要上限。
+
+### 标题配置（`SessionTitleLlmConfig`）
 
 | 键 | 默认值 | 含义 |
 |---|---|---|
@@ -49,6 +53,14 @@ kind: "package-library"
 | `maxOutputTokens` | 必填 | 辅助生成的 token 上限 |
 | `timeoutMs` | 必填 | 运行时定时器限制内的端到端时限 |
 | `provider`, `model` | 可选 | 显式路由；二者同时提供或同时省略 |
+
+### brief 配置新增项（`SessionBriefLlmConfig`）
+
+| 键 | 约定 |
+|---|---|
+| `targetSummaryWords` | 非 CJK 摘要的正整数目标词数。 |
+| `targetSummaryCjkCharacters` | 中文、日文或韩文摘要的正整数目标字符数。 |
+| `maxSummaryBytes` | 截断后摘要的正整数 UTF-8 字节上限；截断不会拆散码点。 |
 
 -----
 
@@ -102,7 +114,7 @@ kind: "package-library"
 
 #### Token 影响
 
-辅助请求根据所选输入大小与 `maxOutputTokens` 消耗 token。它与主 agent 请求相互独立，不会向 agent 历史增加标题文本或封装内容。DeepSeek 标题调用会关闭思考；主对话保留自身配置的思考模式。
+辅助请求根据所选输入大小和 `maxOutputTokens` 消耗 token。它与主 agent（智能体）请求相互独立，不会向 agent 历史增加标题文本或封装内容。DeepSeek 标题调用会关闭思考；当部署把辅助调用路由到推理模型时，可见回答需要与模型的推理轨迹共享 `maxOutputTokens`，因此该上限必须按「可能服务该配置行的最差路由」的轨迹加完整响应来设定——过小的上限会让每次调用都以 max-tokens 结束原因失败。
 
 #### KV Cache 影响
 

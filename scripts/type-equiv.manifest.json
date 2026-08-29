@@ -688,6 +688,11 @@
     },
     {
       "doc": "docs/subsystems/session-title.md",
+      "symbol": "SessionSummaryEventData",
+      "source": "packages/session/session-title/src/types.ts"
+    },
+    {
+      "doc": "docs/subsystems/session-title.md",
       "symbol": "SessionTitleLlmRequestEventData",
       "source": "packages/session/session-title-llm/src/index.ts"
     },

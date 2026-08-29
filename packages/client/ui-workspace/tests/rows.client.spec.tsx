@@ -511,6 +511,37 @@ describe('workspace browser rows', () => {
     }
   })
 
+  it('hover card shows the model-written summary when projected and omits the line otherwise', () => {
+    vi.useFakeTimers()
+    try {
+      const node: SessionNode = {
+        id: sid('s1'), title: 'Briefed', blank: false, running: false,
+        runningSubagentCount: 0, completed: false, updatedAt: 0,
+        summary: '用追加日志解释会话命名的来源。',
+      }
+      render(<SessionNodeItem node={node} currentId={undefined} now={0} onOpen={vi.fn()}
+        onRename={vi.fn()} onFork={vi.fn()} onArchive={vi.fn()} t={t} />)
+      fireEvent.pointerEnter(screen.getByRole('treeitem').parentElement as HTMLElement)
+      act(() => { vi.advanceTimersByTime(500) })
+      expect(screen.getByText('用追加日志解释会话命名的来源。')).toBeTruthy()
+
+      // No projection yet: the summary line stays absent entirely.
+      cleanup()
+      const unbriefed: SessionNode = {
+        id: sid('s2'), title: 'Plain', blank: false, running: false,
+        runningSubagentCount: 0, completed: false, updatedAt: 0,
+      }
+      render(<SessionNodeItem node={unbriefed} currentId={undefined} now={0} onOpen={vi.fn()}
+        onRename={vi.fn()} onFork={vi.fn()} onArchive={vi.fn()} t={t} />)
+      fireEvent.pointerEnter(screen.getByRole('treeitem').parentElement as HTMLElement)
+      act(() => { vi.advanceTimersByTime(500) })
+      expect(screen.getAllByText('Plain').length).toBeGreaterThanOrEqual(2)
+      expect(screen.queryByText('用追加日志解释会话命名的来源。')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it.each([
     ['approval', '等待审批'],
     ['plan-review', '计划待审'],

@@ -661,6 +661,22 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 
 来源：[`packages/core/session/src/types.ts:364`](../packages/core/session/src/types.ts)
 
+<a id="sessionsummary--log-only"></a>
+
+#### `session/summary` — log-only
+
+```ts persistence-catalog
+/**
+ * Latest-wins session summary written alongside a provider title. Log-only:
+ * it never enters the model surface or derived history.
+ */
+'session/summary': SessionSummaryEventData
+```
+
+类型：[SessionSummaryEventData](subsystems/session-title.zh.md)
+
+来源：[`packages/session/session-title/src/index.ts:84`](../packages/session/session-title/src/index.ts)
+
 <a id="sessiontitle--log-only"></a>
 
 #### `session/title` — log-only
@@ -675,7 +691,7 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 
 类型：[SessionTitleEventData](subsystems/session-title.zh.md)
 
-来源：[`packages/session/session-title/src/index.ts:77`](../packages/session/session-title/src/index.ts)
+来源：[`packages/session/session-title/src/index.ts:79`](../packages/session/session-title/src/index.ts)
 
 <a id="sessiontitle-llm-request--log-only"></a>
 
@@ -688,7 +704,7 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 
 类型：[SessionTitleLlmRequestEventData](subsystems/session-title.zh.md)
 
-来源：[`packages/session/session-title-llm/src/index.ts:45`](../packages/session/session-title-llm/src/index.ts)
+来源：[`packages/session/session-title-llm/src/index.ts:50`](../packages/session/session-title-llm/src/index.ts)
 
 ### `session-log-deepseek/*`
 

@@ -16,6 +16,8 @@ import { workspaceTitleOf } from '@deepseek-ai/dsh-util-workspace-path'
 import {
   indexSubagentDescendants, type SubagentDescendantSummary,
 } from './subagent-lineage.ts'
+// Type-only: pulls the title-domain `summary` projection-key merge into this program.
+import type {} from '@deepseek-ai/dsh-session-title/client'
 
 /** Group key for Sessions outside every Workspace. */
 export const UNGROUPED_KEY = ''
@@ -29,6 +31,8 @@ export interface SessionNode {
   id: SessionId
   /** Stored display title; the renderer substitutes the localized New Session label for blank rows. */
   title: string
+  /** Host-projected session summary (the `summary` projection key); absent before a brief provider lands. */
+  summary?: string
   /** The provisional blank session (renderer shows the localized New Session title). */
   blank: boolean
   /** A Session-scoped UI consumer is awaiting this user. */
@@ -247,9 +251,11 @@ function sessionNode(
   pendingInteractions: SessionPendingInteractions,
 ): SessionNode {
   const pendingInteraction = visiblePendingKind(pendingInteractions.get(s.id)?.kind)
+  const summary = s.projectionValues?.summary
   return {
     id: s.id,
     title: sessionTitle(s),
+    ...(typeof summary === 'string' && summary !== '' ? { summary } : {}),
     blank: s.blank,
     running: s.running,
     runningSubagentCount: descendants.get(s.id)?.runningCount ?? 0,

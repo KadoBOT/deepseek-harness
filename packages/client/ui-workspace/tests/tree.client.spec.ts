@@ -77,6 +77,16 @@ describe('deriveGroups', () => {
     },
   )
 
+  it('projects a non-empty summary into the row and drops null or missing projections', () => {
+    const briefed = { ...summary('briefed', 10), projectionValues: { title: 'Briefed', summary: 'One-sentence brief.' } }
+    const untitled = { ...summary('plain', 11), projectionValues: { title: 'Plain', summary: null } }
+    const bare = summary('bare', 12)
+    const sessions = list(briefed, untitled, bare)
+    const grouped = deriveGroups(sessions, [workspace('project', ['briefed', 'plain', 'bare'])], noArchive, noAttention, view(['project']))
+    expect(grouped[0]!.sessions.map(node => node.summary)).toEqual(['One-sentence brief.', undefined, undefined])
+    expect(deriveFlat(list(briefed), noArchive, noAttention)[0]?.summary).toBe('One-sentence brief.')
+  })
+
   it('puts only real unaccounted Sessions in the trailing Ungrouped group', () => {
     const sessions = list(summary('owned', 1, '/projects/first'), summary('loose', 9, '/other'))
     const groups = deriveGroups(

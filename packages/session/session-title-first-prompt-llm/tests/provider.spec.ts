@@ -13,7 +13,7 @@ class RecordingAdapter extends LlmAdapter {
 
   override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     this.requests.push(options)
-    yield { type: 'text-delta', index: 0, text: 'First-message model title' }
+    yield { type: 'text-delta', index: 0, text: '{"name": "First-message model title", "summary": "Names the session from its first message."}' }
     yield { type: 'finish', reason: { kind: 'stop' } }
   }
 }
@@ -22,8 +22,11 @@ const TITLE_CONFIG = { fallbackMaxWords: 5, fallbackMaxBytes: 40, maxTitleBytes:
 const LLM_CONFIG = {
   targetWords: 5,
   targetCjkCharacters: 10,
+  targetSummaryWords: 20,
+  targetSummaryCjkCharacters: 40,
   maxInputBytes: 1_000,
   maxOutputTokens: 32,
+  maxSummaryBytes: 256,
   timeoutMs: 1_000,
   provider: 'title-route',
   model: 'title-model',
@@ -88,5 +91,32 @@ describe('first-prompt LLM title provider', () => {
       expect(content?.type === 'text' && content.text).not.toContain('second input must be ignored')
     }
     expect(ctx.sessionTitle.get(session)).toMatchObject({ messageSeqs: [first.seq] })
+  })
+
+  it('names the session from the JSON name and appends the summary event once per revision', async () => {
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SessionTitleService, TITLE_CONFIG)
+    const adapter = new RecordingAdapter()
+    ctx.llm.registerAdapter(['title-route'], adapter)
+    await ctx.plugin(providerPlugin, LLM_CONFIG)
+    const session = ctx.sessions.create(SessionId('brief-plugin'))
+    session.append('turn/start', { turn: 1 })
+    const first = session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'name this session' }], source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+
+    const title = await ctx.sessionTitle.refresh(session)
+
+    expect(title).toMatchObject({
+      title: 'First-message model title',
+      messageSeqs: [first.seq],
+    })
+    const summaries = session.events.filter(event => event.type === 'session/summary')
+    expect(summaries).toHaveLength(1)
+    expect(summaries[0]).toMatchObject({
+      data: { summary: 'Names the session from its first message.', messageSeqs: [first.seq] },
+    })
   })
 })

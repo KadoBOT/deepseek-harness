@@ -34,12 +34,15 @@ import { gatherSweepRoots } from '../src/cleanup.ts'
 const DAY_MS = 24 * 60 * 60 * 1000
 
 let root: string
+let originalUmask: number
 
 beforeEach(() => {
+  originalUmask = process.umask(0o077)
   root = mkdtempSync(join(tmpdir(), 'dsh-spill-test-'))
 })
 afterEach(() => {
   rmSync(root, { recursive: true, force: true })
+  process.umask(originalUmask)
 })
 
 /** Write a file with an mtime `ageDays` in the past (fractional allowed). */

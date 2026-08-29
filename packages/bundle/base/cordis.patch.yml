@@ -57,9 +57,15 @@
       config:
         targetWords: 5
         targetCjkCharacters: 10
+        targetSummaryWords: 20
+        targetSummaryCjkCharacters: 40
         maxInputBytes: 4096
-        maxOutputTokens: 64
-        timeoutMs: 60000
+        # Reasoning models spend output tokens on their trace before the JSON
+        # answer; the cap must cover both, or every auxiliary call dies on
+        # max-tokens and the deterministic fallback wins.
+        maxOutputTokens: 1024
+        maxSummaryBytes: 512
+        timeoutMs: 120000
 
     - id: user-questions
       name: '@deepseek-ai/dsh-user-questions'

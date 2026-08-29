@@ -69,7 +69,7 @@ Once the Workspace list baseline is ready, browser-persisted expansion and Sessi
 
 ### Hover cards
 
-Workspace and Session hover cards copy the value their row clips: activating a Workspace card writes its full directory path, while activating a non-blank Session card writes its full display title. A provisional blank New Session card remains read-only because its localized label is a placeholder rather than session content.
+A non-blank Session row's hover card renders the session's projected one-sentence summary under the title when the `summary` projection carries one, clipped to four lines. Workspace and Session hover cards copy the value their row clips: activating a Workspace card writes its full directory path, while activating a non-blank Session card writes its full display title. A provisional blank New Session card remains read-only because its localized label is a placeholder rather than session content. The card reports the dictionary-driven copied state only after the browser accepts the clipboard write.
 
 </details>
 

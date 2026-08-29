@@ -659,6 +659,22 @@ Source: [`packages/schedule/schedule/src/types.ts:219`](../packages/schedule/sch
 
 Source: [`packages/core/session/src/types.ts:364`](../packages/core/session/src/types.ts)
 
+<a id="sessionsummary--log-only"></a>
+
+#### `session/summary` — log-only
+
+```ts persistence-catalog
+/**
+ * Latest-wins session summary written alongside a provider title. Log-only:
+ * it never enters the model surface or derived history.
+ */
+'session/summary': SessionSummaryEventData
+```
+
+Types: [SessionSummaryEventData](subsystems/session-title.md)
+
+Source: [`packages/session/session-title/src/index.ts:84`](../packages/session/session-title/src/index.ts)
+
 <a id="sessiontitle--log-only"></a>
 
 #### `session/title` — log-only
@@ -673,7 +689,7 @@ Source: [`packages/core/session/src/types.ts:364`](../packages/core/session/src/
 
 Types: [SessionTitleEventData](subsystems/session-title.md)
 
-Source: [`packages/session/session-title/src/index.ts:77`](../packages/session/session-title/src/index.ts)
+Source: [`packages/session/session-title/src/index.ts:79`](../packages/session/session-title/src/index.ts)
 
 <a id="sessiontitle-llm-request--log-only"></a>
 
@@ -686,7 +702,7 @@ Source: [`packages/session/session-title/src/index.ts:77`](../packages/session/s
 
 Types: [SessionTitleLlmRequestEventData](subsystems/session-title.md)
 
-Source: [`packages/session/session-title-llm/src/index.ts:45`](../packages/session/session-title-llm/src/index.ts)
+Source: [`packages/session/session-title-llm/src/index.ts:50`](../packages/session/session-title-llm/src/index.ts)
 
 ### `session-log-deepseek/*`
 

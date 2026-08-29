@@ -9,7 +9,9 @@ kind: "package-reference"
 
 ## 概述
 
-`dsh-session-title-first-prompt-llm` 作为可选的 `ctx.sessionTitle` 提供方，通过 `ctx.llm` 总结第一条符合条件的用户消息。它注册 `first-prompt` 节奏，只在全新非 fork 会话首次创建回退时自动运行，并把结果归因于该消息的确切 seq。自动失败会保留回退，之后只能通过 `ctx.sessionTitle.refresh()` 重试。它使用 `dsh-session-title-llm` 的完整必填共享 LLM 配置，因此路由、提示词、预算与取消行为不会漂移。自动行为与配置在前；实现是对共享策略的薄注册。
+可选的 `ctx.sessionTitle` 提供方，通过 `ctx.llm` 从第一条符合条件的用户消息推导会话名称加一句话摘要。它通过共享 brief 注册器注册 `first-prompt` 节奏，只在全新非 fork 会话首次创建回退时自动运行，并把两个结果都归因于该消息的确切 seq。模型以单行 JSON 对象 `{"name": "...", "summary": "..."}` 作答；名称成为标题，截断后的摘要在标题落盘前作为仅日志事件 `session/summary` 追加。自动失败会保留回退、不追加摘要，之后只能通过 `ctx.sessionTitle.refresh()` 重试。
+
+该插件使用完整且必填的[共享 brief 配置](../session-title-llm/README.zh.md#configuration)——基础标题上限加上 `targetSummaryWords`、`targetSummaryCjkCharacters` 与 `maxSummaryBytes`。同时省略 `provider` 与 `model` 时，会继承当前已记录主请求的确切路由；也可以同时设置二者，使生成使用独立路由。
 
 ## 目录
 
@@ -82,15 +84,15 @@ kind: "package-reference"
 <a id="model-experience"></a>
 ## 模型体验
 
-### 首消息标题请求
+### 首消息名称与摘要请求
 
 #### 模型看到什么
 
-标题模型会收到共享标题指令，以及一个只包含第一条符合条件用户消息的 JSON 数组。后续提示词与继承的 fork 历史不会触发再次自动调用。
+模型会收到共享 brief 指令——单行返回一个恰好含 `name` 与 `summary` 的 JSON 对象，各自遵循所配置的词数与 CJK 字符数目标——以及一个只包含第一条符合条件用户消息的 JSON 数组。后续提示词与继承的 fork 历史不会触发再次自动调用。
 
 #### Token 影响
 
-全新会话最多自动发出一次辅助请求，并受 `maxInputBytes` 与 `maxOutputTokens` 约束；显式刷新可能发出额外调用。主 agent 请求不会增加 token。
+全新会话最多自动发出一次辅助请求，并受 `maxInputBytes` 和 `maxOutputTokens` 约束；显式刷新可能发出额外调用。主 agent（智能体）请求不会增加 token；追加的摘要事件仅写入日志。
 
 #### KV Cache 影响
 

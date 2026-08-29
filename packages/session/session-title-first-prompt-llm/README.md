@@ -9,7 +9,9 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-`dsh-session-title-first-prompt-llm` summarizes the first eligible human message through `ctx.llm` as an optional `ctx.sessionTitle` provider. It registers the `first-prompt` cadence, runs automatically only when a fresh non-fork session first creates its fallback, and attributes the result to that message's exact seq. An automatic failure retains the fallback and is retried only through `ctx.sessionTitle.refresh()`. It uses the complete required shared LLM configuration from `dsh-session-title-llm`, so route, prompt, budget, and cancellation behavior cannot drift. Automatic behavior and configuration come first; the implementation is a thin registration over the shared policy.
+Optional `ctx.sessionTitle` provider that derives the session name plus a one-sentence summary from the first eligible human message through `ctx.llm`. It registers the `first-prompt` cadence via the shared brief registrar, runs automatically only when a fresh non-fork session first creates its fallback, and attributes both results to that message's exact seq. The model answers with one JSON object `{"name": "...", "summary": "..."}`; the name becomes the title and the truncated summary is appended as a log-only `session/summary` event before the title lands. An automatic failure retains the fallback, appends no summary, and is retried only through `ctx.sessionTitle.refresh()`.
+
+The plugin uses the complete required [shared brief configuration](../session-title-llm/README.md#configuration) — the base title limits plus `targetSummaryWords`, `targetSummaryCjkCharacters`, and `maxSummaryBytes`. Omit both `provider` and `model` to inherit the exact route from the current logged main request, or set both to route generation independently.
 
 ## Table of Contents
 
@@ -82,15 +84,15 @@ Read these pages when the provider contract is not enough. They move from the sh
 <a id="model-experience"></a>
 ## Model Experience
 
-### First-message title request
+### First-message name-and-summary request
 
 #### What the model sees
 
-The title model receives the shared title instruction and a JSON array containing only the first eligible human message. Later prompts and inherited fork history do not trigger another automatic call.
+The model receives the shared brief instruction — one JSON object on one line with exactly `name` and `summary`, each sized by the configured word and CJK-character targets — and a JSON array containing only the first eligible human message. Later prompts and inherited fork history do not trigger another automatic call.
 
 #### Token effect
 
-At most one automatic auxiliary request is made for a fresh session, bounded by `maxInputBytes` and `maxOutputTokens`; explicit refreshes may make additional calls. The main agent request gains zero tokens.
+At most one automatic auxiliary request is made for a fresh session, bounded by `maxInputBytes` and `maxOutputTokens`; explicit refreshes may make additional calls. The main agent request gains zero tokens; the appended summary event is log-only.
 
 #### KV Cache effect
 
