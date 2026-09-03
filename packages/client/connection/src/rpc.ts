@@ -79,6 +79,21 @@ export type RpcMessage = ClientRequest | ServerResponse
 export interface ConnectionTrustRequest {
   /** Request headers supplied by either the Fetch or node:http representation. */
   readonly headers: Headers | Readonly<Record<string, string | readonly string[] | undefined>>
+  /** Direct socket addresses; absent on carriers that do not expose a network peer. */
+  readonly socket?: {
+    readonly localAddress?: string | undefined
+    readonly remoteAddress?: string | undefined
+  } | undefined
+}
+
+/** One destination-specific IPv4 source subnet allowed to omit browser authentication. */
+export interface UnauthenticatedNetworkRule {
+  /** Local interface address that received the connection. */
+  readonly localAddress: string
+  /** IPv4 address anchoring the accepted source subnet. */
+  readonly sourceAddress: string
+  /** CIDR prefix length for the accepted source subnet. */
+  readonly sourcePrefixLength: number
 }
 
 /** HTTP status returned before dispatch, or undefined when the request may proceed. */
@@ -171,15 +186,15 @@ export interface HostConnectionHandle {
   createSharedFetchHandler(channel: '/api'): ConnectionFetchHandler
 
   /**
-   * Apply Connection's Host/Origin checks and browser authentication to
-   * another Web route.
+   * Apply Connection's Host/Origin checks and configured socket-peer or
+   * browser authentication to another Web route.
    * @param request - request headers from the HTTP or upgrade request.
    * @returns rejection status, or undefined when the route may accept the request.
    */
   requestRejection(request: ConnectionTrustRequest): ConnectionRequestRejection
 
   /**
-   * Authenticate one frontend index request, owning a token redirect or 401.
+   * Authenticate one frontend index request, owning any redirect, 401, or 403.
    * @param request - root or configured-index HTTP request.
    * @param response - response owned when the result is false.
    * @returns true only when the frontend may serve index.html.

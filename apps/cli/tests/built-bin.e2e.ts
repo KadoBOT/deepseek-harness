@@ -62,10 +62,21 @@ async function waitForFile(file: string): Promise<void> {
   }
 }
 
-/** GET status from the wildcard-bound server while forcing an arbitrary Host authority. */
-function statusOf(port: number, path: string, host: string): Promise<number> {
+/** GET status from one address of the wildcard-bound server. */
+function statusOf(
+  address: string,
+  port: number,
+  path: string,
+  authority = `${address}:${String(port)}`,
+): Promise<number> {
   return new Promise((resolveStatus, rejectStatus) => {
-    const request = httpRequest({ host: '127.0.0.1', port, path, method: 'GET', headers: { host } }, (response) => {
+    const request = httpRequest({
+      host: address,
+      port,
+      path,
+      method: 'GET',
+      headers: { host: authority },
+    }, (response) => {
       response.resume()
       resolveStatus(response.statusCode ?? 0)
     })
@@ -576,10 +587,17 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
     }
   }, SPAWN_TIMEOUT_MS + 30_000)
 
-  it('serves every interface with --host 0.0.0.0 behind the /api trust fence', async () => {
+  it('serves every interface with explicit trusted-network authentication bypass', async () => {
     const home = mkdtempSync(join(tmpdir(), 'dsh-built-web-lan-'))
-    const announcement = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=[^ ]+) \(LAN: (http:\/\/\d+\.\d+\.\d+\.\d+:\d+\/\?token=[^)]+)\)/
-    const child = execa(process.execPath, [dshBin, 'web', '--host', '0.0.0.0', '--port', '0', '--no-open'], {
+    const announcement = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=[^ ]+) \(LAN\/Tailscale: (http:\/\/\d+\.\d+\.\d+\.\d+:\d+)\)/
+    const child = execa(process.execPath, [
+      dshBin,
+      'web',
+      '--host', '0.0.0.0',
+      '--allow-unauthenticated-network',
+      '--port', '0',
+      '--no-open',
+    ], {
       cwd: home,
       input: '',
       killSignal: 'SIGKILL',
@@ -601,8 +619,9 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
         }, SPAWN_TIMEOUT_MS)
         const onData = (chunk: Buffer): void => {
           collected += chunk.toString()
-          // The URL line carries the loopback readiness signal plus the sampled LAN literal;
-          // the exposure warning follows in the same print burst, so settle one beat later.
+          // The URL line carries the tokenized loopback readiness signal plus
+          // the clean selected network literal; the warning follows in the
+          // same print burst, so settle one beat later.
           if (!flushed && announcement.test(collected)) {
             flushed = true
             clearTimeout(timer)
@@ -616,19 +635,20 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
           rejectReady(new Error('wildcard dsh web exited early (' + String(result.exitCode) + '); stdout:\n' + collected + '\nstderr:\n' + String(result.stderr)))
         }, () => {})
       })
-      expect(out).toContain('dsh web warning: serving every interface unauthenticated')
+      expect(out).toContain('detected LAN and Tailscale peers can connect without browser authentication')
       const announcedUrls = announcement.exec(out)
-      if (announcedUrls === null) throw new Error('wildcard dsh web omitted its authenticated URLs')
+      if (announcedUrls === null) throw new Error('wildcard dsh web omitted its network URLs')
       const loopbackUrl = new URL(announcedUrls[1]!)
-      const lanUrl = new URL(announcedUrls[2]!)
+      const networkUrl = new URL(announcedUrls[2]!)
       const port = Number(loopbackUrl.port)
-      const lanAddress = lanUrl.hostname
-      expect(await statusOf(port, loopbackUrl.pathname + loopbackUrl.search, loopbackUrl.host)).toBe(303)
-      // A rebound or foreign Host authority is refused before any handler runs.
-      expect(await statusOf(port, '/api/session.list', 'evil.example')).toBe(403)
-      // The machine's own sampled LAN literal passes the Host fence; browser
-      // authentication may still reject this direct cookie-less request.
-      expect(await statusOf(port, '/api/session.list', lanAddress + ':' + String(port))).not.toBe(403)
+      const networkAddress = networkUrl.hostname
+      expect(await statusOf('127.0.0.1', port, loopbackUrl.pathname + loopbackUrl.search, loopbackUrl.host)).toBe(303)
+      expect(await statusOf(networkAddress, port, '/')).toBe(200)
+      expect([401, 403]).not.toContain(
+        await statusOf(networkAddress, port, '/api/session.list'),
+      )
+      expect(await statusOf('127.0.0.1', port, '/')).toBe(401)
+      expect(await statusOf(networkAddress, port, '/api/session.list', 'evil.example')).toBe(403)
     } finally {
       // A server that reached readiness is still running; one that died early
       // makes the kill a no-op and the await return the recorded result.

@@ -10,7 +10,9 @@ Status: implemented
 
 ## 决策
 
-`dsh web --host` 只接受 `127.0.0.1` 与 `0.0.0.0`；其他任何取值都会在任何服务行求值之前以用法错误退出。全接口模式继续打印环回 URL 行，并追加首个采样到的 LAN IPv4 URL，同时在旁边一次性说明代价：服务器无认证，任何能访问该端口的主体都可以驱动本 harness。本次调用的 LAN 字面量经 `webRuntime` 以不带端口的形式送达信任围栏，与显式 `--trusted-host` 条目并列；仅限回环的方法仍然只对回环开放。
+`dsh web --host` 只接受 `127.0.0.1` 与 `0.0.0.0`；其他任何取值都会在任何服务行求值之前以用法错误退出。全接口模式继续打印带 token 的 loopback URL，并追加首个采样到的非 internal IPv4 URL，后者同样需要浏览器凭据。本次调用的 IP 字面量经 `webRuntime` 以不带端口的形式送达信任围栏，与显式 `--trusted-host` 条目并列。
+
+单独的 [`--allow-unauthenticated-network` 决策](../architecture/2026-09-03-trusted-network-browser-authentication.zh.md)只允许派生的 RFC 1918 与 Tailscale 套接字对等端省略该凭据。它要求显式全接口 host，并会打印干净网络 URL，而 loopback 仍携带 token。
 
 ## 曾考虑的替代方案
 
@@ -20,4 +22,4 @@ Status: implemented
 
 ## 后果
 
-一个 flag 就能把远程代码执行暴露给所有可达接口且无需凭据；保护只有针对浏览器侧 DNS 重绑定与跨站请求的 Host 围栏，别无其他——无认证 `0.0.0.0` 部署的「可信网络」假设自此可从正式 CLI 达成。LAN 采样只在激活时进行一次，之后新增的地址需要重启或声明 authority。自定义接口地址与 IPv6 绑定在 CLI 与载体 schema 两处仍不受支持。
+绑定 flag 会把 HTTP 服务器暴露到每个可达接口，而 Connection 的 Host 围栏与浏览器会话仍保护 Host API 与 WebSocket 访问。显式可信网络 flag 可以通过明文 HTTP 向匹配的私有对等端授予完整工具权限；绑定与认证仍是运维者的两个独立选择。接口采样只在激活时进行一次，之后新增的地址需要重启或声明 authority。自定义接口地址与 IPv6 绑定在 CLI 与载体 schema 两处仍不受支持。

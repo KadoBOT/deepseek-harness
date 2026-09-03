@@ -24,7 +24,7 @@ The shipped apps own these command lines:
 
 | Profile | Arguments |
 |---|---|
-| `web` | `--host`, `--port`, repeatable `--trusted-host`, `--no-open` |
+| `web` | `--host`, `--port`, repeatable `--trusted-host`, `--allow-unauthenticated-network`, `--no-open` |
 | `headless` | the task text, as the positional argument |
 | `sdk` | no options; stdio carries the JSON-RPC protocol |
 | `sdk-minimal` | no options; stdio carries the same JSON-RPC protocol |
@@ -67,17 +67,20 @@ Git-hosted plugins that ship sources build during install through their `prepare
 
 ## Web alias
 
-`dsh web` is a hardcoded alias for `--profile web`; the flags after it belong to the web app, whose ordinary bundle provider parses them. `--host` and `--port` override the composed values of the rows that carry them, repeatable `--trusted-host` contributes invocation authorities through `ctx.webRuntime.trustedHosts` (a deployment expression concatenates its own authorities), and `--no-open` disables the default-browser handoff for this invocation. The client-plugin HMR receiver is always mounted and stays idle until a separate `pnpm run dev:web` watcher rebuilds client bundles.
+`dsh web` is a hardcoded alias for `--profile web`; the flags after it belong to the web app, whose ordinary bundle provider parses them. `--host` and `--port` override the composed values of the rows that carry them, repeatable `--trusted-host` contributes invocation authorities through `ctx.webRuntime.trustedHosts` (a deployment expression concatenates its own authorities), `--allow-unauthenticated-network` derives direct private-network peer rules, and `--no-open` disables the default-browser handoff for this invocation. The bypass flag requires an explicit `--host 0.0.0.0`; help and invalid combinations exit without activating dependent Web rows. The client-plugin HMR receiver is always mounted and stays idle until a separate `pnpm run dev:web` watcher rebuilds client bundles.
 
 ```sh
 dsh web
 dsh web --no-open
+dsh web --host 0.0.0.0 --allow-unauthenticated-network
 dsh web --patch ./extra.cordis.yml
 dsh web --dump-config
 dsh web --help
 ```
 
-The production Web runner needs built package and frontend artifacts (`pnpm run build`). It serves `http://127.0.0.1:3080` by default and, for a local launch, opens that canonical host URL only after the complete Loader tree settles. A non-empty inherited `SSH_CONNECTION` or `SSH_TTY` suppresses the browser handoff because the SSH client or editor owns the local forwarded address; the host URL is still printed. `--host` accepts exactly `127.0.0.1` or `0.0.0.0`; the all-interfaces value serves every interface unauthenticated — anyone who can reach the port can drive this harness — prints the machine's LAN IPv4 URL on the startup line, and feeds those literals to the `/api` browser-trust fence alongside named authorities from repeatable `--trusted-host`. Immediately before a local handoff it prints `dsh web: opening the default browser; pass --no-open to disable`; if the operating-system handoff fails, a diagnostic on stderr states the reason, leaves the server running, and names the URL for manual use.
+The production Web runner needs built package and frontend artifacts (`pnpm run build`). It serves `http://127.0.0.1:3080` by default and, for a local launch, opens that canonical host URL only after the complete Loader tree settles. A non-empty inherited `SSH_CONNECTION` or `SSH_TTY` suppresses the browser handoff because the SSH client or editor owns the local forwarded address; the host URL is still printed. `--host` accepts exactly `127.0.0.1` or `0.0.0.0`. The all-interface value adds sampled non-internal IPv4 literals to the Host fence and prints a tokenized network URL; browser authentication remains required unless the bypass flag is present.
+
+With `--allow-unauthenticated-network`, each contained RFC 1918 interface subnet and the Tailscale `100.64.0.0/10` range becomes a destination-specific direct socket rule. The selected `LAN/Tailscale` URL is clean, but the printed loopback URL and automatic browser handoff stay tokenized. Host, Origin, and cross-site checks still run before index, HTTP API, or WebSocket access, so a MagicDNS URL also needs an explicit authority such as `--trusted-host olares-1.hake-skink.ts.net`. Public, loopback, unmatched, malformed, and header-forwarded sources do not gain access. The server provides no TLS; every matched peer receives the complete tool-capable Host authority. Immediately before a local handoff it prints `dsh web: opening the default browser; pass --no-open to disable`; if the operating-system handoff fails, a diagnostic on stderr states the reason, leaves the server running, and names the URL for manual use.
 
 Process shutdown gives the plugin tree up to five seconds to dispose. The first `SIGINT`/`SIGTERM` starts that graceful drain — `SIGTERM` is a supervisor's ordinary stop request and exits 0 on every surface, `SIGINT` reports 130; a second signal forces immediate exit. If one-shot normal completion is already stuck in disposal, the first `Ctrl+C` is the escalation and exits immediately instead of being swallowed.
 

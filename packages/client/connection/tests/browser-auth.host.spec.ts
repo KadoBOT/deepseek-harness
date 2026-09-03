@@ -167,6 +167,24 @@ describe('BrowserAuth', () => {
     }
   })
 
+  it('serves an unauthenticated network index after removing a token query', async () => {
+    const auth = await createAuth(new RecordCredentials())
+    const clean = response()
+    expect(auth.authorizeUnauthenticatedIndex(request('/index.html'), clean.value)).toBe(true)
+    expect(clean.state).toEqual({})
+
+    const tokenized = response()
+    expect(auth.authorizeUnauthenticatedIndex(request('/?token=obsolete'), tokenized.value)).toBe(false)
+    expect(tokenized.state).toEqual({
+      status: 303,
+      headers: {
+        'cache-control': 'no-store',
+        'location': '/',
+        'referrer-policy': 'no-referrer',
+      },
+    })
+  })
+
   it('rejects tampering, expiry, future issuance, and a longer lifetime than configured', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-08-24T00:00:00.000Z'))
