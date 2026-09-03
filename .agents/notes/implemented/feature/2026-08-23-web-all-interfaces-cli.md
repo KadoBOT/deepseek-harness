@@ -10,7 +10,9 @@ The [explicit web bind address](2026-07-22-web-bind-address.md) decision names `
 
 ## Decision
 
-`dsh web --host` accepts exactly `127.0.0.1` and `0.0.0.0`; any other value exits with a usage error before any server row evaluates. All-interfaces mode keeps printing the loopback URL line, appends the first sampled LAN IPv4 URL, and states the cost once next to it: the server is unauthenticated, so anyone who can reach the port can drive this harness. The invocation's LAN literals reach the trust fence port-less through `webRuntime`, alongside explicit `--trusted-host` entries; loopback-gated methods stay loopback-only.
+`dsh web --host` accepts exactly `127.0.0.1` and `0.0.0.0`; any other value exits with a usage error before any server row evaluates. All-interfaces mode keeps printing the tokenized loopback URL and appends the first sampled non-internal IPv4 URL with the same browser credential requirement. The invocation's IP literals reach the trust fence port-less through `webRuntime`, alongside explicit `--trusted-host` entries.
+
+The separate [`--allow-unauthenticated-network` decision](../architecture/2026-09-03-trusted-network-browser-authentication.md) permits only derived RFC 1918 and Tailscale socket peers to omit that credential. It requires the explicit all-interface host and prints a clean network URL while loopback remains tokenized.
 
 ## Alternatives considered
 
@@ -20,4 +22,4 @@ The [explicit web bind address](2026-07-22-web-bind-address.md) decision names `
 
 ## Consequences
 
-One flag exposes remote code execution to every reachable interface without credentials; protection is the Host fence against browser-borne DNS rebinding and cross-site requests, nothing else, so the documented trusted-network assumption of an unauthenticated `0.0.0.0` deployment is reachable from the shipped CLI. LAN sampling happens once at activation, so an address acquired later needs a restart or a declared authority. Custom interface addresses and IPv6 binds remain unsupported at both the CLI and the carrier schema.
+The bind flag exposes the HTTP server to every reachable interface, while Connection's Host fence and browser session still protect Host API and WebSocket access. The explicit trusted-network flag can grant complete tool authority to matching private peers over plaintext HTTP; binding and authentication remain separate operator choices. Interface sampling happens once at activation, so an address acquired later needs a restart or a declared authority. Custom interface addresses and IPv6 binds remain unsupported at both the CLI and the carrier schema.

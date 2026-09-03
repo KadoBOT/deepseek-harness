@@ -1,9 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import { once } from 'node:events'
+import { networkInterfaces } from 'node:os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import WebSocket, { type RawData } from 'ws'
 import { Context, Service, symbols } from '@deepseek-ai/cordis'
-import { apply as applyConnection, inject as connectionInject } from '@deepseek-ai/dsh-client-connection'
+import {
+  apply as applyConnection,
+  inject as connectionInject,
+  type ConnectionConfig,
+} from '@deepseek-ai/dsh-client-connection'
 import WebServer from '@deepseek-ai/dsh-host-webserver'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import {
@@ -46,6 +51,24 @@ const browserCookies = new WeakMap<Context, string>()
 const REMOTE_HOST = { home: '/home/fixture' } as const
 type AgentWireId = TypertContextWire<TypertContextMap['agent']>
 const agentId = (value: string): AgentWireId => value as AgentWireId
+
+function privateIpv4Interface(): { readonly address: string; readonly prefixLength: number } {
+  for (const addresses of Object.values(networkInterfaces())) {
+    for (const entry of addresses ?? []) {
+      if (entry.internal || entry.family !== 'IPv4') continue
+      const octets = entry.address.split('.').map(Number)
+      const [first, second] = octets
+      const isPrivate = first === 10
+        || (first === 172 && second !== undefined && second >= 16 && second <= 31)
+        || (first === 192 && second === 168)
+      const prefixLength = Number(entry.cidr?.split('/')[1])
+      if (isPrivate && Number.isInteger(prefixLength) && prefixLength >= 0 && prefixLength <= 32) {
+        return { address: entry.address, prefixLength }
+      }
+    }
+  }
+  throw new Error('gateway stream fixture requires one non-internal RFC 1918 IPv4 interface')
+}
 
 /** Exchange this test Host's process token for its WebSocket/HTTP Cookie header. */
 function browserCookie(ctx: Context): string {
@@ -990,22 +1013,69 @@ describe('Typert Remote streams', () => {
     rejected.resume()
     ;(request as { abort(): void }).abort()
   })
+
+  it('applies network authentication to WebSocket peers after the Host fence', async () => {
+    const network = privateIpv4Interface()
+    const { ctx } = await setup(true, {}, {
+      host: '0.0.0.0',
+      connection: {
+        trustedHosts: [network.address],
+        unauthenticatedNetworkRules: [{
+          localAddress: network.address,
+          sourceAddress: network.address,
+          sourcePrefixLength: network.prefixLength,
+        }],
+      },
+    })
+    const networkOrigin = `ws://${network.address}:${String(ctx.webServer.port)}`
+    const allowed = new WebSocket(`${networkOrigin}/api/remote.mux`)
+    await once(allowed, 'open')
+    const closed = once(allowed, 'close')
+    allowed.close()
+    await closed
+
+    const loopback = new WebSocket(`ws://127.0.0.1:${String(ctx.webServer.port)}/api/remote.mux`)
+    loopback.on('error', () => {})
+    const loopbackResponse: unknown[] = await once(loopback, 'unexpected-response')
+    const loopbackRequest = loopbackResponse[0]
+    const loopbackRejected = loopbackResponse[1] as { statusCode?: number; resume(): void }
+    expect(loopbackRejected.statusCode).toBe(401)
+    loopbackRejected.resume()
+    ;(loopbackRequest as { abort(): void }).abort()
+
+    const untrusted = new WebSocket(`${networkOrigin}/api/remote.mux`, {
+      headers: { host: 'untrusted.example' },
+    })
+    untrusted.on('error', () => {})
+    const untrustedResponse: unknown[] = await once(untrusted, 'unexpected-response')
+    const untrustedRequest = untrustedResponse[0]
+    const untrustedRejected = untrustedResponse[1] as { statusCode?: number; resume(): void }
+    expect(untrustedRejected.statusCode).toBe(403)
+    untrustedRejected.resume()
+    ;(untrustedRequest as { abort(): void }).abort()
+  })
 })
+
+interface TransportSetup {
+  readonly host: '127.0.0.1' | '0.0.0.0'
+  readonly connection: ConnectionConfig
+}
 
 async function setup(
   transport: boolean,
   gatewayConfig: GatewayConfig = {},
+  transportSetup: TransportSetup = { host: '127.0.0.1', connection: {} },
 ): Promise<{ readonly ctx: Context; readonly service: FeedService }> {
   const ctx = new Context()
   roots.push(ctx)
   if (transport) {
-    await ctx.plugin(WebServer, { host: '127.0.0.1', port: 0 })
+    await ctx.plugin(WebServer, { host: transportSetup.host, port: 0 })
     provideBrowserCredentials(ctx)
   }
   await ctx.plugin(TypertRegistry)
   await ctx.plugin(TypertGatewayService, gatewayConfig)
   if (transport) {
-    await ctx.plugin({ inject: [...connectionInject], apply: applyConnection })
+    await ctx.plugin({ inject: [...connectionInject], apply: applyConnection }, transportSetup.connection)
   }
   await ctx.plugin(FeedService)
   ctx.typert.register({

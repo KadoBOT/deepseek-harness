@@ -9,7 +9,9 @@ import { API_PATH } from './api-path.ts'
 import { bridge, DEFAULT_MAX_REQUEST_BODY_BYTES } from './http-bridge.ts'
 import { assertTrustedAuthority } from './api-request-trust.ts'
 import { BrowserAuth } from './browser-auth.ts'
+import { createUnauthenticatedNetworkMatcher } from './network-auth.ts'
 import { HostConnectionService } from './rpc-host.ts'
+import type { UnauthenticatedNetworkRule } from './rpc.ts'
 
 export type {
   ConnectionFetchMethod,
@@ -29,6 +31,7 @@ export type {
   HostConnectionRpc,
   RpcMessage,
   ServerResponse,
+  UnauthenticatedNetworkRule,
 } from './rpc.ts'
 export { RpcId, transportError } from './rpc.ts'
 export {
@@ -77,6 +80,11 @@ export interface ConnectionConfig {
    * bind. An entry that is not a bare, canonical authority fails plugin load.
    */
   trustedHosts?: string[]
+  /**
+   * Direct socket destination and IPv4 source-subnet pairs that may omit the
+   * browser cookie. Host, Origin, and Fetch Metadata checks still apply.
+   */
+  unauthenticatedNetworkRules?: UnauthenticatedNetworkRule[]
   /** Absolute browser-session lifetime in days. Default: 30. */
   cookieMaxAgeDays?: number
   /** Maximum buffered JSON body for every `/api` request. Default: 300 MiB. */
@@ -85,30 +93,40 @@ export interface ConnectionConfig {
 
 export const Config: z<ConnectionConfig> = z.object({
   trustedHosts: z.array(String).default([]),
+  unauthenticatedNetworkRules: z.array(z.object({
+    localAddress: String,
+    sourceAddress: String,
+    sourcePrefixLength: z.natural().max(32).required(),
+  })).default([]),
   cookieMaxAgeDays: z.natural().min(1).default(30),
   maxRequestBodyBytes: z.natural().min(1).default(DEFAULT_MAX_REQUEST_BODY_BYTES),
 })
 
 /**
  * Mounts the API gateway under the browser transport prefix. Every request on
- * the prefix passes the Host/Origin browser-trust fence and persistent browser
- * authentication before dispatch.
+ * the prefix passes the Host/Origin browser-trust fence and either direct
+ * socket-peer or persistent browser authentication before dispatch.
  * @param ctx - Host plugin context.
  * @param config - resolved plugin config (schema defaults applied).
  */
 export async function apply(ctx: Context, config?: ConnectionConfig): Promise<void> {
   // The Loader resolves schema defaults; hand-built test contexts may pass none.
   const trustedHosts = config?.trustedHosts ?? []
+  const unauthenticatedNetworkRules = config?.unauthenticatedNetworkRules ?? []
   const cookieMaxAgeDays = config?.cookieMaxAgeDays ?? 30
   const maxRequestBodyBytes = config?.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES
   // Config boundary: a malformed entry fails the load loudly here rather than
   // silently authorizing its hostname prefix at request time.
   for (const entry of trustedHosts) assertTrustedAuthority(entry)
+  const allowsUnauthenticatedNetwork = createUnauthenticatedNetworkMatcher(
+    unauthenticatedNetworkRules,
+  )
   assertImageBodyCapacity(ctx, maxRequestBodyBytes)
   const connection = new HostConnectionService(
     ctx,
     trustedHosts,
     await BrowserAuth.create(ctx.root, ctx.credentials, cookieMaxAgeDays),
+    allowsUnauthenticatedNetwork,
   )
   const fetchHandler = connection.createSharedFetchHandler(API_PATH)
   const route: WebRoute = {

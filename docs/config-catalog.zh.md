@@ -335,14 +335,29 @@ export interface ConnectionConfig {
    * bind. An entry that is not a bare, canonical authority fails plugin load.
    */
   trustedHosts?: string[]
+  /**
+   * Direct socket destination and IPv4 source-subnet pairs that may omit the
+   * browser cookie. Host, Origin, and Fetch Metadata checks still apply.
+   */
+  unauthenticatedNetworkRules?: UnauthenticatedNetworkRule[]
   /** Absolute browser-session lifetime in days. Default: 30. */
   cookieMaxAgeDays?: number
   /** Maximum buffered JSON body for every `/api` request. Default: 300 MiB. */
   maxRequestBodyBytes?: number
 }
+
+/** One destination-specific IPv4 source subnet allowed to omit browser authentication. */
+export interface UnauthenticatedNetworkRule {
+  /** Local interface address that received the connection. */
+  readonly localAddress: string
+  /** IPv4 address anchoring the accepted source subnet. */
+  readonly sourceAddress: string
+  /** CIDR prefix length for the accepted source subnet. */
+  readonly sourcePrefixLength: number
+}
 ```
 
-来源：[`packages/client/connection/src/index.ts:55`](../packages/client/connection/src/index.ts)
+来源：[`packages/client/connection/src/index.ts:73`](../packages/client/connection/src/index.ts)
 
 <a id="deepseek-aidsh-client-hmr"></a>
 
@@ -3160,6 +3175,8 @@ export interface WebRuntimeConfig {
 ```ts config-catalog
 /** Plugin config: composed deployment settings plus per-invocation command-line values. */
 export interface Config {
+  /** Let derived RFC 1918 LAN and Tailscale peers omit browser authentication. */
+  allowUnauthenticatedNetwork: boolean
   /** Permit default-browser handoff after the Loader tree settles; an SSH launch suppresses it. */
   openBrowser: boolean
   /** Print the URL line on activation; a non-interactive layer can turn it off. */

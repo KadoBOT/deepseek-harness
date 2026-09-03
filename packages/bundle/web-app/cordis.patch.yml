@@ -136,6 +136,7 @@
       name: '@deepseek-ai/dsh-web-app'
       inject: [webStartup]
       config:
+        allowUnauthenticatedNetwork: !!js ctx.webStartup.allowUnauthenticatedNetwork
         openBrowser: !!js ctx.webStartup.openBrowser
         printUrl: true
         surfaceContext: true
@@ -167,6 +168,8 @@
         # A deployment adding authorities keeps this expression and concatenates
         # its literals, for example: ['app.internal', ...ctx.webRuntime.trustedHosts].
         trustedHosts: !!js ctx.webRuntime.trustedHosts
+        # Direct socket destination and source rules from the same startup snapshot.
+        unauthenticatedNetworkRules: !!js ctx.webRuntime.unauthenticatedNetworkRules
 
     - id: api-remotes
       name: '@deepseek-ai/dsh-api-remotes'

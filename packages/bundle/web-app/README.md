@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Run `dsh --profile web` and the interface opens in your default browser, ready for interactive chat with the agent. You get the conversation view, model and settings management, and session history, backed by the same model access, tools, and safety defaults as every other surface. The command prints a tokenized startup URL; the browser exchanges that token for a signed session cookie and redirects to the clean root URL. You can change the port, suppress the browser handoff, and allow extra hosts from the command line. Choose it for interactive work in the browser; `dsh-headless` is the one-shot command-line sibling.
+Run `dsh --profile web` and the interface opens in your default browser, ready for interactive chat with the agent. You get the conversation view, model and settings management, and session history, backed by the same model access, tools, and safety defaults as every other surface. The command normally prints a tokenized startup URL; an explicit all-interface trusted-network mode also prints a clean URL for detected private LAN or Tailscale peers. You can change the port, suppress the browser handoff, and allow extra hosts from the command line. Choose it for interactive work in the browser; `dsh-headless` is the one-shot command-line sibling.
 
 ## Table of Contents
 
@@ -38,10 +38,11 @@ After startup you see a `dsh web:` line whose root URL carries a fresh process t
 
 ### Configuration
 
-Most users never set these; the command-line flags feed the four settings below — `--host`, `--port`, and `--trusted-host` come from the invocation, and `--no-open` turns the browser handoff off for that invocation:
+Most users never set these; the command-line flags feed Web app and webserver settings — `--host`, `--port`, `--trusted-host`, and `--allow-unauthenticated-network` come from the invocation, and `--no-open` turns the browser handoff off for that invocation:
 
 | Field | Default | Meaning |
 |---|---|---|
+| `allowUnauthenticatedNetwork` | `false` | Let derived RFC 1918 LAN and Tailscale socket peers omit browser authentication |
 | `openBrowser` | `true` | Open the default browser after startup; SSH launches suppress it |
 | `printUrl` | `true` | Print the `dsh web:` URL line at startup |
 | `surfaceContext` | `true` | Give the agent GUI-orientation context and expose `DSH_WEB_URL` to its shell commands |
@@ -51,7 +52,14 @@ The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-a
 
 ### LAN access and trusted hosts
 
-By default the GUI accepts connections from this machine only. A deployment that binds all network interfaces also allows browsers from the LAN, and the printed URL then includes a LAN address; `--trusted-host` adds extra hosts in either case. Host and Origin checks control reachability, while the token exchange authenticates every Host API method and WebSocket stream. The LAN addresses are sampled once at startup, so a network change later is not picked up — restart the GUI to re-advertise.
+By default the GUI accepts connections from this machine only. `--host 0.0.0.0` binds every IPv4 interface and prints a tokenized network URL; those peers still need the launch-token exchange or an existing browser cookie. Add the explicit bypass only on a network whose peers may receive the Harness user's complete tool authority:
+
+```sh
+dsh web --host 0.0.0.0 --allow-unauthenticated-network \
+  --trusted-host olares-1.hake-skink.ts.net
+```
+
+The bypass admits an actual socket peer only when the connection arrives on a sampled RFC 1918 interface from that interface's contained subnet, or on a sampled `100.64.0.0/10` address from the Tailscale range. Loopback, public interfaces, unmatched peers, missing socket addresses, and forwarding headers do not bypass authentication. Host, Origin, and cross-site checks remain mandatory, so a MagicDNS name such as the example requires its own `--trusted-host`; direct sampled IP literals are added automatically. The loopback URL and browser handoff remain tokenized, while the printed `LAN/Tailscale` URL is clean. Sampling happens once at startup, and the server uses plaintext HTTP, so restart after network changes and enable this mode only when every admitted peer and network path is trusted.
 
 ### Running over SSH
 
@@ -79,21 +87,21 @@ A patch replaces the targeted row's whole `config`, so each web row restates eve
 
 The URL line and browser handoff are readiness signals: supervisors RPC as soon as they observe the line, and a browser requests the page as soon as it opens, so both run only after the Loader tree settles and Connection authentication is available — or immediately in a hand-built tree without a Loader. A tree disposed mid-boot announces nothing.
 
-### LAN trust sampling
+### Network trust sampling
 
-`resolveLanTrust` samples the network once at boot: a loopback bind (`127.0.0.1`) derives no LAN addresses, while an all-interfaces bind adds every non-internal IPv4 literal. The derived literals plus the explicit `--trusted-host` authorities form the `/api` browser-trust fence, and the printed LAN URL always matches that fence.
+`resolveLanTrust` samples the network once at boot. A loopback bind (`127.0.0.1`) derives nothing, while an all-interfaces bind adds every non-internal IPv4 literal to the Host fence and display list. When the bypass is enabled, contained RFC 1918 rules and fixed-range Tailscale rules separately feed Connection's socket matcher; private rules precede Tailscale rules when the runtime selects the clean displayed URL.
 
 ### Source map
 
 | File | Role |
 |---|---|
-| [`src/index.ts`](src/index.ts) | The `web-app` glue plugin: dist resolution, LAN trust sampling, prompt sections, bash variable, URL line, browser handoff |
-| [`src/startup.ts`](src/startup.ts) | The `web-startup` provider: `--host`, `--port`, `--trusted-host`, `--no-open`, `--help` |
+| [`src/index.ts`](src/index.ts) | The `web-app` glue plugin: dist resolution, network rule sampling, prompt sections, bash variable, URL line, browser handoff |
+| [`src/startup.ts`](src/startup.ts) | The `web-startup` provider: `--host`, `--port`, `--trusted-host`, `--allow-unauthenticated-network`, `--no-open`, `--help` |
 | [`cordis.patch.yml`](cordis.patch.yml) | The web patch: restated base values, web host rows, browser roster, agent plane behind presets |
 | — | No runtime invariant companion is published; every contribution (frontend-static child plugin, prompt section, bashEnv registration) is registry-disposed with the fiber, and each owning registry's package carries that relation's invariant; the package holds no mutable state of its own to audit. |
 | [`tests/web-app.spec.ts`](tests/web-app.spec.ts) | Dist resolution, fallback seat, prompt sections, readiness |
 | [`tests/startup.spec.ts`](tests/startup.spec.ts) | Command-line parsing over a real Loader tree |
-| [`tests/trusted-hosts.spec.ts`](tests/trusted-hosts.spec.ts) | LAN-trust sampling |
+| [`tests/trusted-hosts.spec.ts`](tests/trusted-hosts.spec.ts) | Host sampling and unauthenticated network-rule derivation |
 | [`tests/browser-open.spec.ts`](tests/browser-open.spec.ts) | Default-browser handoff after the page is reachable |
 
 ### Invariant ownership
@@ -142,7 +150,8 @@ The prompt section sits near the system prompt's head and is stable for the life
 These limits tell you what to expect in unusual setups — a source checkout, SSH sessions, or strict networks. They are current package constraints, not a general browser comparison or a task backlog.
 
 - **The frontend must be built** — a source checkout needs `pnpm run build` first; startup stops with a build hint when the dist is missing, and there is no source-serving fallback.
-- **LAN addresses are sampled once at startup** — interface changes after boot are not re-advertised; the printed LAN URL always matches what was sampled.
+- **Network addresses and bypass rules are sampled once at startup** — interface changes after boot are not re-advertised or admitted; restart after a LAN or VPN change.
+- **Trusted-network access uses plaintext HTTP socket facts** — it provides neither TLS nor cryptographic peer identity, and `100.64.0.0/10` can also appear on carrier-grade NAT networks.
 - **Only the handoff start is observable** — the GUI reports that the browser was asked to open, not that it actually opened; a later browser exit is never reported, and the printed URL is your manual fallback.
 - **SSH sessions keep the URL but skip the browser handoff** — the printed URL names the remote host's loopback endpoint; the SSH client or editor must expose and open the local forwarded address.
 - **`BROWSER` overrides only come from the environment** — a discovered `.env` cannot set `BROWSER`; only an inherited value can choose the executable for the automatic handoff.

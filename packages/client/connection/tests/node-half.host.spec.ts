@@ -8,7 +8,15 @@ import type { AddressInfo } from 'node:net'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { WebServer, WebRoute, WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
-import { API_PATH, RpcId, apply, inject, type ClientRequest, type HostConnectionHandle } from '../src/index.ts'
+import {
+  API_PATH,
+  RpcId,
+  apply,
+  inject,
+  type ClientRequest,
+  type HostConnectionHandle,
+  type UnauthenticatedNetworkRule,
+} from '../src/index.ts'
 import { DEFAULT_MAX_REQUEST_BODY_BYTES } from '../src/http-bridge.ts'
 import { provideBrowserCredentials } from './browser-credentials.ts'
 
@@ -34,10 +42,27 @@ function fakeHttpServer(
   }
 }
 
-/** Bodyless GET carrying the given headers (enough for the trust fence + bridge). */
-function fakeRequest(headers: Record<string, string>, url = `${API_PATH}/session.list`): IncomingMessage {
+interface SocketPeer {
+  readonly localAddress?: string
+  readonly remoteAddress?: string
+}
+
+/** Bodyless GET carrying the given headers and direct socket facts. */
+function fakeRequest(
+  headers: Record<string, string>,
+  url = `${API_PATH}/session.list`,
+  peer?: SocketPeer,
+): IncomingMessage {
   const request = Readable.from([]) as unknown as IncomingMessage
-  Object.assign(request, { url, method: 'GET', headers })
+  Object.assign(request, {
+    url,
+    method: 'GET',
+    headers,
+    socket: {
+      localAddress: peer?.localAddress,
+      remoteAddress: peer?.remoteAddress,
+    },
+  })
   return request
 }
 
@@ -81,7 +106,10 @@ function fakeResponse(): {
   return { response, state }
 }
 
-async function mounted(config?: { trustedHosts?: string[] }): Promise<{
+async function mounted(config?: {
+  trustedHosts?: string[]
+  unauthenticatedNetworkRules?: UnauthenticatedNetworkRule[]
+}): Promise<{
   routes: WebRoute[]
   upgrades: WebUpgradeRoute[]
   connection: HostConnectionHandle
@@ -235,6 +263,60 @@ describe('connection node half', () => {
       host: 'harness.example',
       cookie: browserCookie(connection, 'harness.example'),
     }))).toBeUndefined()
+    await dispose()
+  })
+
+  it('allows network authentication only for a trusted matching socket peer', async () => {
+    const config = {
+      trustedHosts: ['192.168.178.16', 'olares-1.hake-skink.ts.net'],
+      unauthenticatedNetworkRules: [{
+        localAddress: '192.168.178.16',
+        sourceAddress: '192.168.178.16',
+        sourcePrefixLength: 24,
+      }],
+    }
+    const { routes, connection, dispose } = await mounted(config)
+    const peer = {
+      localAddress: '192.168.178.16',
+      remoteAddress: '192.168.178.91',
+    }
+
+    const api = fakeResponse()
+    await routes[0]!.handler(fakeRequest({ host: '192.168.178.16:3080' }, undefined, peer), api.response)
+    expect(api.state.status).toBe(404)
+
+    expect(connection.requestRejection(fakeRequest(
+      { host: '127.0.0.1:3080' },
+      undefined,
+      { localAddress: '127.0.0.1', remoteAddress: '127.0.0.1' },
+    ))).toBe(401)
+    expect(connection.requestRejection(
+      fakeRequest({ host: 'untrusted.example' }, undefined, peer),
+    )).toBe(403)
+
+    const cleanIndex = fakeResponse()
+    expect(connection.authorizeIndex(
+      fakeRequest({ host: '192.168.178.16:3080' }, '/', peer),
+      cleanIndex.response,
+    )).toBe(true)
+    expect(cleanIndex.state).toEqual({})
+
+    const tokenizedIndex = fakeResponse()
+    expect(connection.authorizeIndex(
+      fakeRequest({ host: '192.168.178.16:3080' }, '/?token=obsolete', peer),
+      tokenizedIndex.response,
+    )).toBe(false)
+    expect(tokenizedIndex.state).toMatchObject({
+      status: 303,
+      headers: { location: '/' },
+    })
+
+    const untrustedIndex = fakeResponse()
+    expect(connection.authorizeIndex(
+      fakeRequest({ host: 'untrusted.example' }, '/', peer),
+      untrustedIndex.response,
+    )).toBe(false)
+    expect(untrustedIndex.state.status).toBe(403)
     await dispose()
   })
 
