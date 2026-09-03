@@ -122,7 +122,7 @@ describe('session-title Loader composition', () => {
       },
     })
     // The Loader-composed brief appends its durable summary beside the provider title.
-    const summary = session.events.findLast(event => event.type === 'session/summary')
+    const summary = session.snapshotEvents().findLast(event => event.type === 'session/summary')
     expect(summary && summary.type === 'session/summary' ? summary.data.summary : undefined)
       .toBe('Names the session through the Loader composition.')
   })

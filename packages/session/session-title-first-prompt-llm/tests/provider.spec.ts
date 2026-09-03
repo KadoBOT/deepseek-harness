@@ -97,6 +97,8 @@ describe('first-prompt LLM title provider', () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(SessionStore)
+    await ctx.plugin(SessionProjectionRegistry)
+    ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
     await ctx.plugin(SessionTitleService, TITLE_CONFIG)
     const adapter = new RecordingAdapter()
     ctx.llm.registerAdapter(['title-route'], adapter)
@@ -113,7 +115,7 @@ describe('first-prompt LLM title provider', () => {
       title: 'First-message model title',
       messageSeqs: [first.seq],
     })
-    const summaries = session.events.filter(event => event.type === 'session/summary')
+    const summaries = session.snapshotEvents().filter(event => event.type === 'session/summary')
     expect(summaries).toHaveLength(1)
     expect(summaries[0]).toMatchObject({
       data: { summary: 'Names the session from its first message.', messageSeqs: [first.seq] },
