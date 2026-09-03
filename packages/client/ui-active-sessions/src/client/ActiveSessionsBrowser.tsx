@@ -8,10 +8,13 @@
  */
 import { useEffect, useState } from 'react'
 import clsx from 'clsx'
+import type { SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
 import { StateDot, IconPlusOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ActiveSessionsBrowserProps, SessionSearchResultSet } from './contract/slots.ts'
 import type { ActiveSessionsKey } from './locales.ts'
-import type { RelativeTimeBucket } from './view.ts'
+import type {
+  RelativeTimeBucket, SessionActivityState, SessionPendingInteractions,
+} from './view.ts'
 import { deriveSearchRows, deriveView, relativeTime, sessionStatus } from './view.ts'
 import css from './Browser.module.css'
 
@@ -44,6 +47,30 @@ function timeAgo(
   const bucket = relativeTime(updatedAt, now)
   if (bucket.unit === 'now') return t('time.now')
   return t('time.ago', { t: t(TIME_KEY[bucket.unit], { n: bucket.n }) })
+}
+
+/**
+ * Screen-reader copy for the leading status dot.
+ * @param t - namespace-bound translate seat.
+ * @param summary - row session summary.
+ * @param status - rendered dot state.
+ * @param pendingInteractions - current pending interactions by session.
+ * @returns the localized state label, or `null` when the row has no dot.
+ */
+function statusLabel(
+  t: (key: ActiveSessionsKey) => string,
+  summary: SessionSummary,
+  status: SessionActivityState | null,
+  pendingInteractions: SessionPendingInteractions,
+): string | null {
+  if (status === null) return null
+  if (status === 'ongoing') return t('status.running')
+  if (status === 'done') return t('status.completed')
+  const kind = pendingInteractions.get(summary.id)?.kind
+  if (kind === 'approval') return t('status.waitingApproval')
+  if (kind === 'plan-review') return t('status.planReview')
+  if (kind === 'question') return t('status.waitingAnswer')
+  return t('status.waitingInput')
 }
 
 /**
@@ -94,8 +121,8 @@ export function ActiveSessionsBrowser(props: ActiveSessionsBrowserProps) {
   }
 
   const renderRow = (
-    summary: { id: string; displayTitle: string; blank: boolean; updatedAt: number },
-    status: 'warning' | 'ongoing' | 'done' | null,
+    summary: SessionSummary,
+    status: SessionActivityState | null,
     selected: boolean,
     workspaceLabel: string | undefined,
     showTime: boolean,
@@ -103,16 +130,20 @@ export function ActiveSessionsBrowser(props: ActiveSessionsBrowserProps) {
     snippet?: string,
   ) => {
     const title = <span className={css.title}>{summary.blank ? props.t('session.new') : summary.displayTitle}</span>
+    const stateLabel = statusLabel(props.t, summary, status, pendingInteractions)
     return (
       <button
         key={summary.id}
         type='button'
         className={clsx(css.row, snippet === undefined ? null : css.hit, selected && css.rowSelected)}
+        role='treeitem'
+        aria-selected={selected}
         aria-current={selected ? 'true' : undefined}
         onClick={onClick}
       >
         <span className={css.slot}>
           {status === null ? null : <StateDot state={status} />}
+          {stateLabel === null ? null : <span className={css.visuallyHidden}>{stateLabel}</span>}
         </span>
         {snippet === undefined ? (
           <>
@@ -208,6 +239,7 @@ export function ActiveSessionsBrowser(props: ActiveSessionsBrowserProps) {
             <button
               type='button'
               className={clsx(css.row, css.groupExpand)}
+              role='treeitem'
               aria-expanded={collapsed ? 'false' : 'true'}
               onClick={() => {
                 setCollapsedGroups((previous) => {
@@ -275,7 +307,13 @@ export function ActiveSessionsBrowser(props: ActiveSessionsBrowserProps) {
           onChange={(event) => { setQuery(event.target.value) }}
         />
       </div>
-      <div className={css.scroll}>{body}</div>
+      <div
+        className={css.scroll}
+        role='tree'
+        aria-label={props.t(searching ? 'search.results.aria' : 'browser.aria')}
+      >
+        {body}
+      </div>
     </div>
   )
 }

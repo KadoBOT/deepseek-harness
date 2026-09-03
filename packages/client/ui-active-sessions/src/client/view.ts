@@ -86,7 +86,12 @@ export function relativeTime(updatedAt: number, now: number): RelativeTimeBucket
   return { unit: 'years', n: Math.floor(diff / (365 * DAY_MS)) }
 }
 
-/** Newest first with stable session identity as the tie-break. */
+/**
+ * Newest first with stable session identity as the tie-break.
+ * @param a - left summary.
+ * @param b - right summary.
+ * @returns comparator result for descending recency and ascending session id.
+ */
 export function byRecencyDesc(a: SessionSummary, b: SessionSummary): number {
   if (b.updatedAt !== a.updatedAt) return b.updatedAt - a.updatedAt
   if (a.id < b.id) return -1
@@ -96,6 +101,9 @@ export function byRecencyDesc(a: SessionSummary, b: SessionSummary): number {
 /**
  * Whether the session belongs in the unified Active section: live activity,
  * an interaction awaiting this user, or a completion reminder not yet cleared.
+ * @param summary - the listed session summary.
+ * @param pendingInteractions - current pending interactions, when available.
+ * @returns whether the summary belongs in the Active section.
  */
 export function isActiveSummary(
   summary: SessionSummary,
@@ -110,6 +118,10 @@ export function isActiveSummary(
  * Shipped visibility rule: subagent-origin rows surface only through their
  * parent's catalog, archived rows hide everywhere, and blank sessions stay
  * hidden unless they are the provisional current one.
+ * @param summary - the listed session summary.
+ * @param currentId - the provisional current session, when one exists.
+ * @param archivedSessionIds - session ids archived from the browser.
+ * @returns whether the summary may appear in this browser.
  */
 export function isVisibleSummary(
   summary: SessionSummary,
@@ -165,6 +177,7 @@ function toRow(
  * cannot leave a visibly empty group behind.
  * @param sessions - the global session list snapshot.
  * @param workspaces - the global workspace list snapshot (order + archive set).
+ * @param pendingInteractions - current pending interactions, when available.
  * @returns active rows and group sections, each newest first.
  */
 export function deriveView(

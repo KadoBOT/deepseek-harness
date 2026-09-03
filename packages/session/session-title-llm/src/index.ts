@@ -257,7 +257,7 @@ async function streamAuxiliaryText(
   titleProvider: SessionTitleProviderId,
   system: string,
   limits: AuxiliaryCallLimits,
-): Promise<{ textBlocks: readonly string[]; route: SessionTitleModelProvenance; messageSeqs: number[] }> {
+): Promise<{ textBlocks: readonly string[]; route: SessionTitleModelProvenance; messageSeqs: SessionSeq[] }> {
   request.signal.throwIfAborted()
   if (selectedMessages.length === 0) {
     throw new Error('session-title-llm: at least one source message is required')

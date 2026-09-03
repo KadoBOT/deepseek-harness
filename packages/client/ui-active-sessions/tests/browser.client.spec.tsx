@@ -86,6 +86,7 @@ async function settleSearch(ms = 300): Promise<void> {
 describe('ActiveSessionsBrowser', () => {
   it('renders the unified Active section above the workspace groups, newest first', () => {
     const { container } = render(<ActiveSessionsBrowser {...browserProps()} />)
+    expect(screen.getByRole('tree', { name: '会话' })).not.toBeNull()
     const header = container.querySelector(`.${css.sectionLabel}`)
     expect(header).not.toBeNull()
     expect(header!.textContent).toContain('进行中')
@@ -135,6 +136,7 @@ describe('ActiveSessionsBrowser', () => {
     })} />)
     expect(container.querySelector(`.${css.sectionLabel}`)!.querySelector('[data-state="warning"]')).not.toBeNull()
     expect(rowFor('Needs answer').querySelector('[data-state="warning"]')).not.toBeNull()
+    expect(screen.getByText('等待回答')).not.toBeNull()
   })
   it('collapses a group when its header is toggled', () => {
     const props = browserProps({

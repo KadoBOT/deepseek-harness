@@ -516,7 +516,7 @@ describe('workspace browser rows', () => {
     try {
       const node: SessionNode = {
         id: sid('s1'), title: 'Briefed', blank: false, running: false,
-        runningSubagentCount: 0, completed: false, updatedAt: 0,
+        runningSubagentCount: 0, completed: false, hasActiveSchedule: false, updatedAt: 0,
         summary: '用追加日志解释会话命名的来源。',
       }
       render(<SessionNodeItem node={node} currentId={undefined} now={0} onOpen={vi.fn()}
@@ -529,7 +529,7 @@ describe('workspace browser rows', () => {
       cleanup()
       const unbriefed: SessionNode = {
         id: sid('s2'), title: 'Plain', blank: false, running: false,
-        runningSubagentCount: 0, completed: false, updatedAt: 0,
+        runningSubagentCount: 0, completed: false, hasActiveSchedule: false, updatedAt: 0,
       }
       render(<SessionNodeItem node={unbriefed} currentId={undefined} now={0} onOpen={vi.fn()}
         onRename={vi.fn()} onFork={vi.fn()} onArchive={vi.fn()} t={t} />)

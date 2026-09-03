@@ -60,7 +60,7 @@ describe.skipIf(!process.env.DEEPSEEK_API_KEY)('first-prompt title provider with
     })
     expect(title?.title.length).toBeGreaterThan(0)
     expect(Buffer.byteLength(title?.title ?? '', 'utf8')).toBeLessThanOrEqual(80)
-    const summaryEvent = session.events.findLast(event => event.type === 'session/summary')
+    const summaryEvent = session.snapshotEvents().findLast(event => event.type === 'session/summary')
     const summary = summaryEvent?.type === 'session/summary' ? summaryEvent.data.summary : undefined
     expect(summary).toBeDefined()
     expect(summary!.length).toBeGreaterThan(0)

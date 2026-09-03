@@ -578,7 +578,8 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
 
   it('serves every interface with --host 0.0.0.0 behind the /api trust fence', async () => {
     const home = mkdtempSync(join(tmpdir(), 'dsh-built-web-lan-'))
-    const child = execa(process.execPath, [dshBin, 'web', '--host', '0.0.0.0', '--port', '0'], {
+    const announcement = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=[^ ]+) \(LAN: (http:\/\/\d+\.\d+\.\d+\.\d+:\d+\/\?token=[^)]+)\)/
+    const child = execa(process.execPath, [dshBin, 'web', '--host', '0.0.0.0', '--port', '0', '--no-open'], {
       cwd: home,
       input: '',
       killSignal: 'SIGKILL',
@@ -596,13 +597,13 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
         let flushed = false
         const timer = setTimeout(() => {
           child.kill('SIGKILL')
-          rejectReady(new Error('wildcard dsh web not ready in 25s; output:\n' + collected))
-        }, 25_000)
+          rejectReady(new Error(`wildcard dsh web not ready in ${String(SPAWN_TIMEOUT_MS / 1_000)}s; output:\n` + collected))
+        }, SPAWN_TIMEOUT_MS)
         const onData = (chunk: Buffer): void => {
           collected += chunk.toString()
           // The URL line carries the loopback readiness signal plus the sampled LAN literal;
           // the exposure warning follows in the same print burst, so settle one beat later.
-          if (!flushed && /dsh web: http:\/\/127\.0\.0\.1:\d+ \(LAN: http:\/\/\d+\.\d+\.\d+\.\d+:\d+\)/.test(collected)) {
+          if (!flushed && announcement.test(collected)) {
             flushed = true
             clearTimeout(timer)
             setTimeout(() => { resolveReady(collected) }, 300)
@@ -616,13 +617,17 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
         }, () => {})
       })
       expect(out).toContain('dsh web warning: serving every interface unauthenticated')
-      const port = Number(/dsh web: http:\/\/127\.0\.0\.1:(\d+)/.exec(out)![1]!)
-      const lanAddress = / \(LAN: http:\/\/(\d+\.\d+\.\d+\.\d+):\d+\)/.exec(out)![1]!
-      expect(await statusOf(port, '/', '127.0.0.1:' + String(port))).toBe(200)
+      const announcedUrls = announcement.exec(out)
+      if (announcedUrls === null) throw new Error('wildcard dsh web omitted its authenticated URLs')
+      const loopbackUrl = new URL(announcedUrls[1]!)
+      const lanUrl = new URL(announcedUrls[2]!)
+      const port = Number(loopbackUrl.port)
+      const lanAddress = lanUrl.hostname
+      expect(await statusOf(port, loopbackUrl.pathname + loopbackUrl.search, loopbackUrl.host)).toBe(303)
       // A rebound or foreign Host authority is refused before any handler runs.
       expect(await statusOf(port, '/api/session.list', 'evil.example')).toBe(403)
-      // The machine's own sampled LAN literal passes the Host fence (the endpoint
-      // itself may still answer 404 for a GET).
+      // The machine's own sampled LAN literal passes the Host fence; browser
+      // authentication may still reject this direct cookie-less request.
       expect(await statusOf(port, '/api/session.list', lanAddress + ':' + String(port))).not.toBe(403)
     } finally {
       // A server that reached readiness is still running; one that died early
@@ -631,15 +636,19 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
       await child
       rmSync(home, { recursive: true, force: true })
     }
-  }, 40_000)
+  }, SPAWN_TIMEOUT_MS + 30_000)
 
   it('runs the headless profile through its app-owned task positional', async () => {
     const apiKey = 'built-dsh-headless-key'
+    const successText = JSON.stringify({
+      name: 'Published headless profile',
+      summary: 'The published headless profile reached the mock.',
+    })
     const server = await startMockLlmServer({
-      sequence: ['reasoning_success'],
+      sequence: ['reasoning_success', 'reasoning_success'],
       apiKey,
       reasoningText: 'Inspecting the published entry.',
-      successText: 'published headless profile reached the mock',
+      successText,
     })
     const home = mkdtempSync(join(tmpdir(), 'dsh-built-headless-'))
     try {
@@ -650,9 +659,9 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
         DEEPSEEK_BASE_URL: server.baseURL,
       })
       expect(result.code, result.stderr).toBe(0)
-      expect(result.stdout).toBe('published headless profile reached the mock')
+      expect(result.stdout).toBe(successText)
       expect(result.stderr).toBe('dsh: reasoning:\nInspecting the published entry.')
-      expect(server.requests.length).toBeGreaterThan(0)
+      expect(server.requests).toHaveLength(2)
       expect(server.requests.every(request => request.path === '/chat/completions')).toBe(true)
       expect(JSON.stringify(server.requests.map(request => request.body))).toContain('answer from the published entry')
     } finally {

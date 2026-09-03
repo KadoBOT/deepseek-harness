@@ -54,8 +54,11 @@
       config:
         targetWords: 5
         targetCjkCharacters: 10
+        targetSummaryWords: 20
+        targetSummaryCjkCharacters: 40
         maxInputBytes: 4096
-        maxOutputTokens: 32
+        maxOutputTokens: 1024
+        maxSummaryBytes: 512
         timeoutMs: 5000
         provider: title-replay
         model: title-model
