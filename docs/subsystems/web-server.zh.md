@@ -44,7 +44,7 @@ interface Config {
 }
 ```
 
-`host` 只接受 `127.0.0.1`（默认姿态）和 `0.0.0.0`（刻意的网络暴露）。载体本身不拥有 TLS、认证或 Origin 策略，因此绑定到非回环地址会暴露服务器，除非组合层提供这些控制。`compression` 默认为 `none`；随附的 Web 组合选择 gzip level 1 和 1024 字节阈值。随附的 `dsh web` 命令选择 loopback 并拒绝 `--host 0.0.0.0`；其 Connection 插件为每个 Host API route 与 stream 提供 Host/Origin 校验和浏览器会话认证。其他组合自行拥有绑定与路由认证策略。dist 位置是认领席位的前端插件的组装事实。
+`host` 只接受 `127.0.0.1`（默认姿态）和 `0.0.0.0`（刻意的网络暴露）。载体本身不拥有 TLS、认证或 Origin 策略，因此绑定到非回环地址会暴露服务器，除非组合层提供这些控制。`compression` 默认为 `none`；随附的 Web 组合选择 gzip level 1 和 1024 字节阈值。随附的 `dsh web` 命令默认选择 loopback，并接受显式全接口绑定；其 Connection 插件为每个 Host API route 与 stream 提供 Host/Origin 校验和浏览器会话认证。`--allow-unauthenticated-network` 还允许指定目标地址的 RFC 1918 与 Tailscale 套接字对等端省略该浏览器凭据，同时保留相同 Host/Origin 校验（[决策](../../.agents/notes/implemented/architecture/2026-09-03-trusted-network-browser-authentication.zh.md)）。其他组合自行拥有绑定与路由认证策略。dist 位置是认领席位的前端插件的组装事实。
 
 ## 服务
 

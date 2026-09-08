@@ -282,6 +282,29 @@ export class BrowserAuth {
   }
 
   /**
+   * Serve an index already authenticated by its direct socket peer. A root URL
+   * carrying any launch token redirects to clean `/` without minting a cookie.
+   * @param req - incoming root or configured-index request.
+   * @param res - response owned when this method returns false.
+   * @returns true only when the caller may serve index.html immediately.
+   */
+  authorizeUnauthenticatedIndex(
+    req: ConnectionIndexRequest,
+    res: ConnectionIndexResponse,
+  ): boolean {
+    /* v8 ignore next -- node:http always supplies url on server requests. */
+    const url = new URL(req.url ?? '/', 'http://dsh.invalid')
+    if (url.pathname !== '/' || !url.searchParams.has(TOKEN_QUERY)) return true
+    res.writeHead(303, {
+      'cache-control': 'no-store',
+      'location': '/',
+      'referrer-policy': 'no-referrer',
+    })
+    res.end()
+    return false
+  }
+
+  /**
    * Verify the authority-bound browser cookie on a Host request.
    * @param request - request headers carrying Host and Cookie.
    * @returns true only for an unexpired cookie signed by this activation's loaded secret.

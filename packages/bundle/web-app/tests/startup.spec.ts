@@ -55,6 +55,7 @@ export const apply = ctx => globalThis.__webStartupApply(ctx)
     `  name: ${pathToFileURL(join(dir, 'reader.mjs')).href}`,
     `  inject: [${WEB_STARTUP_SERVICE}]`,
     '  config:',
+    '    allowUnauthenticatedNetwork: !!js ctx.webStartup.allowUnauthenticatedNetwork',
     "    host: !!js ctx.webStartup.host ?? '127.0.0.1'",
     '    openBrowser: !!js ctx.webStartup.openBrowser',
     '    port: !!js ctx.webStartup.port ?? 3080',
@@ -96,6 +97,7 @@ describe('web command-line provider', () => {
       '--trusted-host', '10.0.0.9',
     ])
     expect(values).toEqual({
+      allowUnauthenticatedNetwork: false,
       host: '127.0.0.1',
       openBrowser: false,
       port: 8080,
@@ -107,8 +109,13 @@ describe('web command-line provider', () => {
 
   it('leaves deployment values to each consumer when flags omit them', async () => {
     const { values, observed } = await bootProvider([])
-    expect(values).toEqual({ openBrowser: true, trustedHosts: [] })
+    expect(values).toEqual({
+      allowUnauthenticatedNetwork: false,
+      openBrowser: true,
+      trustedHosts: [],
+    })
     expect(observed.readerConfig).toEqual({
+      allowUnauthenticatedNetwork: false,
       host: '127.0.0.1',
       openBrowser: true,
       port: 3080,
@@ -121,6 +128,7 @@ describe('web command-line provider', () => {
     expect(observed.out).toContain('dsh --profile web')
     expect(observed.out).toContain('--no-open')
     expect(observed.out).toContain('--trusted-host')
+    expect(observed.out).toContain('--allow-unauthenticated-network')
     expect(values).toBeUndefined()
     expect(observed.readerConfig).toBeUndefined()
     expect(observed.exits).toEqual([0])
@@ -136,9 +144,44 @@ describe('web command-line provider', () => {
 
   it('publishes the explicit all-interfaces host to the consumer', async () => {
     const { values, observed } = await bootProvider(['--host', '0.0.0.0'])
-    expect(values).toEqual({ openBrowser: true, host: '0.0.0.0', trustedHosts: [] })
-    expect(observed.readerConfig).toEqual({ openBrowser: true, host: '0.0.0.0', port: 3080, trustedHosts: [] })
+    expect(values).toEqual({
+      allowUnauthenticatedNetwork: false,
+      openBrowser: true,
+      host: '0.0.0.0',
+      trustedHosts: [],
+    })
+    expect(observed.readerConfig).toEqual({
+      allowUnauthenticatedNetwork: false,
+      openBrowser: true,
+      host: '0.0.0.0',
+      port: 3080,
+      trustedHosts: [],
+    })
     expect(observed.exits).toEqual([])
+  })
+
+  it('publishes the explicit trusted-network bypass for an all-interfaces host', async () => {
+    const { values, observed } = await bootProvider([
+      '--host', '0.0.0.0',
+      '--allow-unauthenticated-network',
+    ])
+    expect(values).toMatchObject({
+      allowUnauthenticatedNetwork: true,
+      host: '0.0.0.0',
+    })
+    expect(observed.readerConfig).toMatchObject({
+      allowUnauthenticatedNetwork: true,
+      host: '0.0.0.0',
+    })
+    expect(observed.exits).toEqual([])
+  })
+
+  it('rejects the trusted-network bypass without an explicit all-interfaces host', async () => {
+    const { values, observed } = await bootProvider(['--allow-unauthenticated-network'])
+    expect(observed.out).toContain('--allow-unauthenticated-network requires --host 0.0.0.0')
+    expect(values).toBeUndefined()
+    expect(observed.readerConfig).toBeUndefined()
+    expect(observed.exits).toEqual([1])
   })
 
   it('rejects a host outside the two bind modes before the consumer activates', async () => {

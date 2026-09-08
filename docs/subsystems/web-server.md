@@ -44,7 +44,7 @@ interface Config {
 }
 ```
 
-`host` accepts only `127.0.0.1` (default posture) and `0.0.0.0` (deliberate network exposure). The carrier itself owns no TLS, authentication, or Origin policy, so a non-loopback bind exposes the server unless the composition supplies those controls. `compression` defaults to `none`; the shipped Web bundle selects gzip level 1 with a 1024-byte threshold. The shipped `dsh web` command selects loopback and rejects `--host 0.0.0.0`; its Connection plugin supplies Host/Origin checks plus browser-session authentication for every Host API route and stream. Other compositions own their bind and route-authentication policy. The dist location is an assembly fact of the frontend plugin that claims the seat.
+`host` accepts only `127.0.0.1` (default posture) and `0.0.0.0` (deliberate network exposure). The carrier itself owns no TLS, authentication, or Origin policy, so a non-loopback bind exposes the server unless the composition supplies those controls. `compression` defaults to `none`; the shipped Web bundle selects gzip level 1 with a 1024-byte threshold. The shipped `dsh web` command defaults to loopback and accepts an explicit all-interface bind; its Connection plugin supplies Host/Origin checks plus browser-session authentication for every Host API route and stream. `--allow-unauthenticated-network` additionally lets destination-specific RFC 1918 and Tailscale socket peers omit that browser credential while preserving the same Host/Origin checks ([decision](../../.agents/notes/implemented/architecture/2026-09-03-trusted-network-browser-authentication.md)). Other compositions own their bind and route-authentication policy. The dist location is an assembly fact of the frontend plugin that claims the seat.
 
 ## The service
 

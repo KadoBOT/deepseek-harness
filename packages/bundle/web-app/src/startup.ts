@@ -1,7 +1,8 @@
 /**
  * The web app's command-line provider: it parses the `dsh --profile web` flag
- * family (`--host`, `--port`, `--trusted-host`, `--no-open`) and its `--help`
- * text, then provides the immutable values as {@link WEB_STARTUP_SERVICE}.
+ * family (`--host`, `--port`, `--trusted-host`,
+ * `--allow-unauthenticated-network`, `--no-open`) and its `--help` text, then
+ * provides the immutable values as {@link WEB_STARTUP_SERVICE}.
  * Ordinary rows inject that service before reading it from lazy config.
  * @module @deepseek-ai/dsh-web-app/startup
  */
@@ -21,6 +22,8 @@ export const WEB_STARTUP_SERVICE = 'webStartup'
 
 /** What the web rows read from {@link WEB_STARTUP_SERVICE}. */
 export interface WebStartupValues {
+  /** Whether detected LAN and Tailscale peers may omit browser authentication. */
+  allowUnauthenticatedNetwork: boolean
   /** Whether this invocation opens the default browser after startup. */
   openBrowser: boolean
   /** `--host`, absent when the invocation did not name one. */
@@ -33,6 +36,7 @@ export interface WebStartupValues {
 
 /** The web flag family, as commander parsed it. */
 interface WebOptions {
+  allowUnauthenticatedNetwork?: boolean
   host?: string
   open: boolean
   port?: string
@@ -48,7 +52,8 @@ function webCommand(): Command {
     .name('dsh --profile web')
     .description('Serve the DeepSeek Harness browser UI.')
     .helpOption('-h, --help', 'show this help')
-    .option('--host <host>', 'bind host: 127.0.0.1 (loopback) or 0.0.0.0 (every interface, unauthenticated)')
+    .option('--host <host>', 'bind host: 127.0.0.1 (loopback) or 0.0.0.0 (every interface)')
+    .option('--allow-unauthenticated-network', 'let detected LAN and Tailscale peers connect without a browser token')
     .option('--no-open', 'do not open the Web UI in the default browser')
     .option('--port <port>', 'listen port; pass 0 to let the OS pick a free one')
     .option('--trusted-host <authority...>', 'extra authority the /api browser-trust fence accepts (host or host:port; repeatable)')
@@ -58,6 +63,8 @@ Examples:
   dsh --profile web --no-open                serve without opening a browser
   dsh --profile web --port 8080              serve on another port
   dsh --profile web --host 0.0.0.0           serve every interface; LAN browsers use the printed LAN URL
+  dsh --profile web --host 0.0.0.0 --allow-unauthenticated-network
+                                               let detected LAN and Tailscale peers omit the token
 `)
 }
 
@@ -75,10 +82,14 @@ export function apply(ctx: Context): void {
     if (options.host !== undefined && options.host !== '127.0.0.1' && options.host !== '0.0.0.0') {
       program.error(`error: --host must be 127.0.0.1 or 0.0.0.0, got ${JSON.stringify(options.host)}`)
     }
+    if (options.allowUnauthenticatedNetwork && options.host !== '0.0.0.0') {
+      program.error('error: --allow-unauthenticated-network requires --host 0.0.0.0')
+    }
     if (options.port !== undefined && !/^\d+$/.test(options.port)) {
       program.error(`error: --port must be a number, got ${JSON.stringify(options.port)}`)
     }
     ctx.provide(WEB_STARTUP_SERVICE, {
+      allowUnauthenticatedNetwork: options.allowUnauthenticatedNetwork ?? false,
       openBrowser: options.open,
       ...options.host !== undefined && { host: options.host },
       ...options.port !== undefined && { port: Number(options.port) },

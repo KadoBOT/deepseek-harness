@@ -9,7 +9,7 @@ kind: "package-bundle"
 
 ## 概述
 
-运行 `dsh --profile web`，界面会在你的默认浏览器中打开，即可与 agent（智能体）交互式聊天。你会获得会话视图、模型与设置管理以及会话历史，背后与其他表层相同的模型访问、工具与安全默认值。该命令会打印带 token 的启动 URL；浏览器用该 token 换取签名会话 cookie，再重定向到干净的根 URL。你可以从命令行更改端口、关闭浏览器交接并允许额外主机。需要浏览器中的交互式工作时选择它；`dsh-headless` 是一次性的命令行兄弟表层。
+运行 `dsh --profile web`，界面会在你的默认浏览器中打开，即可与 agent（智能体）交互式聊天。你会获得会话视图、模型与设置管理以及会话历史，背后与其他表层相同的模型访问、工具与安全默认值。该命令通常会打印带 token 的启动 URL；显式的全接口可信网络模式还会为检测到的私有 LAN 或 Tailscale 对等端打印干净 URL。你可以从命令行更改端口、关闭浏览器交接并允许额外主机。需要浏览器中的交互式工作时选择它；`dsh-headless` 是一次性的命令行兄弟表层。
 
 ## 目录
 
@@ -38,10 +38,11 @@ dsh --profile web --no-open --port 8080
 
 ### 配置
 
-大多数用户不需要设置这些；命令行 flag 会提供给下面四个设置——`--host`、`--port` 与 `--trusted-host` 来自本次调用，`--no-open` 仅对本次调用关闭浏览器交接：
+大多数用户不需要设置这些；命令行 flag 会向 Web 应用与 webserver 设置提供取值——`--host`、`--port`、`--trusted-host` 与 `--allow-unauthenticated-network` 来自本次调用，`--no-open` 仅对本次调用关闭浏览器交接：
 
 | 字段 | 默认值 | 含义 |
 |---|---|---|
+| `allowUnauthenticatedNetwork` | `false` | 允许派生的 RFC 1918 LAN 与 Tailscale 套接字对等端省略浏览器认证 |
 | `openBrowser` | `true` | 启动后用默认浏览器打开；SSH 启动会抑制它 |
 | `printUrl` | `true` | 启动时打印 `dsh web:` URL 行 |
 | `surfaceContext` | `true` | 给 agent（智能体）提供 GUI 定位上下文，并把 `DSH_WEB_URL` 暴露给其 shell 命令 |
@@ -51,7 +52,14 @@ dsh --profile web --no-open --port 8080
 
 ### LAN 访问与可信主机
 
-默认情况下 GUI 只接受本机的连接。绑定所有网络接口的部署也会允许 LAN 内的浏览器访问，此时打印的 URL 会附带一个 LAN 地址；`--trusted-host` 在两种情况下都能添加额外主机。Host 与 Origin 检查控制可达性，token 交换则认证每个 Host API 方法与 WebSocket stream。LAN 地址只在启动时采样一次，因此之后的网络变化不会被感知——重启 GUI 以重新公告。
+默认情况下 GUI 只接受本机连接。`--host 0.0.0.0` 会绑定每个 IPv4 接口并打印带 token 的网络 URL；这些对等端仍需完成启动 token 交换或持有现有浏览器 cookie。只有当网络中的所有对等端都可获得 Harness 用户的完整工具权限时，才添加显式绕过：
+
+```sh
+dsh web --host 0.0.0.0 --allow-unauthenticated-network \
+  --trusted-host olares-1.hake-skink.ts.net
+```
+
+仅当连接通过已采样的 RFC 1918 接口到达，且实际套接字对等端位于该接口包含的子网中；或者连接通过已采样的 `100.64.0.0/10` 地址到达，且对等端位于 Tailscale 范围中时，该绕过才会放行。loopback、公网接口、不匹配的对等端、缺失的套接字地址与转发标头都不能绕过认证。Host、Origin 与跨站检查仍是强制要求，因此示例中的 MagicDNS 名称需要单独设置 `--trusted-host`；直接使用已采样的 IP 字面量则会自动加入允许清单。loopback URL 与浏览器交接仍携带 token，而打印的 `LAN/Tailscale` URL 不携带 token。采样只在启动时执行一次，且服务器使用明文 HTTP；网络变化后请重启，并且仅在每个获准对等端与网络路径均可信时启用此模式。
 
 ### 通过 SSH 运行
 
@@ -79,21 +87,21 @@ patch 会替换目标行的整个 `config`，因此每个 Web 行都重述自己
 
 URL 行与浏览器交接都是就绪信号：监督方一观察到该行就发起 RPC，浏览器一打开就请求页面，因此两者只在 Loader 配置树结算且 Connection 认证可用后运行——在没有 Loader 的手工构建树中则立即运行。启动中途被释放的树不会宣告任何内容。
 
-### LAN 信任采样
+### 网络信任采样
 
-`resolveLanTrust` 在启动时只采样一次网络：loopback 绑定（`127.0.0.1`）不派生任何 LAN 地址，绑定所有网卡则会加入每个非 internal IPv4 字面量。派生字面量加上显式的 `--trusted-host` 权威标识组成 `/api` 浏览器信任栅栏，打印的 LAN URL 始终与该栅栏一致。
+`resolveLanTrust` 在启动时只采样一次网络。loopback 绑定（`127.0.0.1`）不派生任何值，全接口绑定则会把每个非 internal IPv4 字面量加入 Host 围栏与展示列表。启用绕过时，包含关系成立的 RFC 1918 规则与固定范围的 Tailscale 规则会分别交给 Connection 的套接字匹配器；运行时选择所展示的干净 URL 时，私有规则排在 Tailscale 规则之前。
 
 ### 源码地图
 
 | 文件 | 职责 |
 |---|---|
-| [`src/index.ts`](src/index.ts) | `web-app` 粘合插件：dist 解析、LAN 信任采样、提示词段落、bash 变量、URL 行、浏览器交接 |
-| [`src/startup.ts`](src/startup.ts) | `web-startup` 提供方：`--host`、`--port`、`--trusted-host`、`--no-open`、`--help` |
+| [`src/index.ts`](src/index.ts) | `web-app` 粘合插件：dist 解析、网络规则采样、提示词段落、bash 变量、URL 行、浏览器交接 |
+| [`src/startup.ts`](src/startup.ts) | `web-startup` 提供方：`--host`、`--port`、`--trusted-host`、`--allow-unauthenticated-network`、`--no-open`、`--help` |
 | [`cordis.patch.yml`](cordis.patch.yml) | Web patch：重述的基础值、Web 宿主行、浏览器名录、preset 之后的 agent 层 |
 | — | 不发布运行时不变式伴生入口；本包只持有静态 contribution 列表，每项 contribution 都由其 registry 释放。 |
 | [`tests/web-app.spec.ts`](tests/web-app.spec.ts) | dist 解析、fallback 席位、提示词段落、就绪宣告 |
 | [`tests/startup.spec.ts`](tests/startup.spec.ts) | 在真实 Loader 树上的命令行解析 |
-| [`tests/trusted-hosts.spec.ts`](tests/trusted-hosts.spec.ts) | LAN 信任采样 |
+| [`tests/trusted-hosts.spec.ts`](tests/trusted-hosts.spec.ts) | Host 采样与无认证网络规则派生 |
 | [`tests/browser-open.spec.ts`](tests/browser-open.spec.ts) | 页面可达后的默认浏览器交接 |
 
 ### 不变式归属
@@ -142,7 +150,8 @@ URL 行与浏览器交接都是就绪信号：监督方一观察到该行就发�
 这些限制告诉你在不常见的环境下会遇到什么——源码 checkout、SSH 会话或严格网络。它们是当前包约束，不是通用的浏览器对比或任务积压。
 
 - **前端必须已构建**——源码 checkout 需要先运行 `pnpm run build`；dist 缺失时启动会以构建提示停止，且没有从源码直接服务的回退路径。
-- **LAN 地址只在启动时采样一次**——启动后的网卡变化不会重新公告；打印的 LAN URL 始终与采样结果一致。
+- **网络地址与绕过规则只在启动时采样一次**——启动后的网卡变化不会重新公告或获准；LAN 或 VPN 变化后请重启。
+- **可信网络访问使用明文 HTTP 套接字事实**——它既不提供 TLS，也不提供密码学对等端身份，而且 `100.64.0.0/10` 也可能出现在运营商级 NAT 网络中。
 - **只能观察到交接的启动**——GUI 只报告浏览器被请求打开，而不是它确实打开了；之后的浏览器退出永远不会上报，打印的 URL 是你的手动回退路径。
 - **SSH 会话保留 URL 但跳过浏览器交接**——打印的 URL 指向远端宿主机 loopback 端点；SSH 客户端或编辑器必须暴露并打开本地转发地址。
 - **`BROWSER` 覆盖只能来自环境**——被发现的 `.env` 不能设置 `BROWSER`；只有继承值能为自动交接选择可执行文件。

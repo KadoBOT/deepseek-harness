@@ -65,11 +65,15 @@ export class HostConnectionService extends Service implements HostConnectionHand
    * @param ctx - owning Connection plugin context.
    * @param trustedHosts - deployment authorities accepted by the Host/Origin fence.
    * @param browserAuth - process token and persistent browser-session owner.
+   * @param allowsUnauthenticatedNetwork - direct socket-peer authentication policy.
    */
   constructor(
     ctx: Context,
     private readonly trustedHosts: readonly string[],
     private readonly browserAuth: BrowserAuth,
+    private readonly allowsUnauthenticatedNetwork: (
+      request: ConnectionTrustRequest,
+    ) => boolean = () => false,
   ) {
     super(ctx, 'connection')
   }
@@ -92,15 +96,27 @@ export class HostConnectionService extends Service implements HostConnectionHand
     }
   }
 
-  /** Apply the configured Host/Origin fence, then browser authentication. */
+  /** Apply the Host/Origin fence, then socket-peer or browser authentication. */
   requestRejection(request: ConnectionTrustRequest): ConnectionRequestRejection {
     if (!isTrustedApiRequest(request, this.trustedHosts)) return 403
+    if (this.allowsUnauthenticatedNetwork(request)) return undefined
     return this.browserAuth.isAuthenticated(request) ? undefined : 401
   }
 
-  /** Authenticate an index request through the process-token exchange or cookie. */
+  /** Authenticate an index through an allowed socket peer, process token, or cookie. */
   authorizeIndex(request: ConnectionIndexRequest, response: ConnectionIndexResponse): boolean {
-    return this.browserAuth.authorizeIndex(request, response)
+    if (!this.allowsUnauthenticatedNetwork(request)) {
+      return this.browserAuth.authorizeIndex(request, response)
+    }
+    if (!isTrustedApiRequest(request, this.trustedHosts)) {
+      response.writeHead(403, {
+        'cache-control': 'no-store',
+        'content-type': 'text/plain; charset=utf-8',
+      })
+      response.end(request.method === 'HEAD' ? undefined : 'forbidden')
+      return false
+    }
+    return this.browserAuth.authorizeUnauthenticatedIndex(request, response)
   }
 
   /** Add this process's launch token to the clean application URL. */

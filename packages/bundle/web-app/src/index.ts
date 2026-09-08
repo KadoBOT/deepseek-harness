@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { addHarnessSourceSection } from '@deepseek-ai/dsh-app-boot'
-import type {} from '@deepseek-ai/dsh-client-connection'
+import type { UnauthenticatedNetworkRule } from '@deepseek-ai/dsh-client-connection'
 import * as FrontendStatic from '@deepseek-ai/dsh-host-frontend-static'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import { scrubbedParentEnv } from '@deepseek-ai/dsh-subprocess'
@@ -42,6 +42,8 @@ export const inject = ['webServer']
 
 /** Plugin config: composed deployment settings plus per-invocation command-line values. */
 export interface Config {
+  /** Let derived RFC 1918 LAN and Tailscale peers omit browser authentication. */
+  allowUnauthenticatedNetwork: boolean
   /** Permit default-browser handoff after the Loader tree settles; an SSH launch suppresses it. */
   openBrowser: boolean
   /** Print the URL line on activation; a non-interactive layer can turn it off. */
@@ -58,6 +60,7 @@ export interface Config {
 }
 
 export const Config: z<Config> = z.object({
+  allowUnauthenticatedNetwork: z.boolean().default(false),
   openBrowser: z.boolean().default(true),
   printUrl: z.boolean().default(true),
   surfaceContext: z.boolean().default(true),
@@ -70,6 +73,8 @@ export interface WebRuntimeValues {
   lanAddresses: string[]
   /** LAN literals followed by explicit invocation authorities. */
   trustedHosts: string[]
+  /** Destination-specific source rules for direct socket-peer authentication. */
+  unauthenticatedNetworkRules: UnauthenticatedNetworkRule[]
 }
 
 /** Environment variable naming the canonical local URL of this Web GUI. */
@@ -129,15 +134,95 @@ try {
  * an OS-assigned port is unknowable before bind.
  * @param bindHost - the active webserver bind host.
  * @param extra - explicit `--trusted-host` values, in argument order.
- * @returns the LAN display addresses and invocation-derived fence authorities.
+ * @param allowUnauthenticatedNetwork - whether to derive private peer rules.
+ * @returns the display addresses, fence authorities, and direct peer rules.
  */
-export function resolveLanTrust(bindHost: string, extra: readonly string[]): WebRuntimeValues {
-  const lanAddresses = bindHost === ALL_INTERFACES_HOST
+export function resolveLanTrust(
+  bindHost: string,
+  extra: readonly string[],
+  allowUnauthenticatedNetwork = false,
+): WebRuntimeValues {
+  const interfaces = bindHost === ALL_INTERFACES_HOST
     ? Object.values(networkInterfaces()).flat()
-      .filter((iface): iface is NonNullable<typeof iface> => iface !== undefined && iface.family === 'IPv4' && !iface.internal)
-      .map(iface => iface.address)
+      .filter((iface): iface is NonNullable<typeof iface> =>
+        iface !== undefined && iface.family === 'IPv4' && !iface.internal)
     : []
-  return { lanAddresses, trustedHosts: [...lanAddresses, ...extra] }
+  const lanAddresses = interfaces.map(iface => iface.address)
+  const unauthenticatedNetworkRules = allowUnauthenticatedNetwork
+    ? deriveUnauthenticatedNetworkRules(interfaces)
+    : []
+  if (bindHost === ALL_INTERFACES_HOST
+    && allowUnauthenticatedNetwork
+    && unauthenticatedNetworkRules.length === 0) {
+    throw new Error(
+      'web-app: --allow-unauthenticated-network found no eligible RFC 1918 or Tailscale IPv4 interface',
+    )
+  }
+  return {
+    lanAddresses,
+    trustedHosts: [...lanAddresses, ...extra],
+    unauthenticatedNetworkRules,
+  }
+}
+
+function ipv4Octets(address: string): readonly number[] | undefined {
+  const octets = address.split('.').map(Number)
+  if (octets.length !== 4
+    || octets.some(octet => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
+    return undefined
+  }
+  return octets
+}
+
+function cidrPrefixLength(address: string, cidr: string | null): number | undefined {
+  if (cidr === null) return undefined
+  const [cidrAddress, rawPrefix, extra] = cidr.split('/')
+  if (cidrAddress !== address || rawPrefix === undefined || extra !== undefined
+    || !/^(?:0|[1-9]\d*)$/u.test(rawPrefix)) return undefined
+  const prefixLength = Number(rawPrefix)
+  return prefixLength <= 32 ? prefixLength : undefined
+}
+
+function rfc1918MinimumPrefix(address: string): number | undefined {
+  const [first, second] = ipv4Octets(address) ?? []
+  if (first === 10) return 8
+  if (first === 172 && second !== undefined && second >= 16 && second <= 31) return 12
+  if (first === 192 && second === 168) return 16
+  return undefined
+}
+
+function isTailscaleAddress(address: string): boolean {
+  const [first, second] = ipv4Octets(address) ?? []
+  return first === 100 && second !== undefined && second >= 64 && second <= 127
+}
+
+function deriveUnauthenticatedNetworkRules(
+  interfaces: readonly {
+    readonly address: string
+    readonly cidr: string | null
+  }[],
+): UnauthenticatedNetworkRule[] {
+  const privateRules: UnauthenticatedNetworkRule[] = []
+  const tailscaleRules: UnauthenticatedNetworkRule[] = []
+  for (const iface of interfaces) {
+    const prefixLength = cidrPrefixLength(iface.address, iface.cidr)
+    if (prefixLength === undefined) continue
+    const minimumPrefix = rfc1918MinimumPrefix(iface.address)
+    if (minimumPrefix !== undefined && prefixLength >= minimumPrefix) {
+      privateRules.push({
+        localAddress: iface.address,
+        sourceAddress: iface.address,
+        sourcePrefixLength: prefixLength,
+      })
+    } else if (isTailscaleAddress(iface.address)) {
+      tailscaleRules.push({
+        localAddress: iface.address,
+        sourceAddress: '100.64.0.0',
+        sourcePrefixLength: 10,
+      })
+    }
+  }
+  return [...privateRules, ...tailscaleRules]
 }
 
 /** Model-visible orientation and acceptance boundary for sessions created through `dsh web`. */
@@ -232,7 +317,11 @@ export const internals: {
  * @param config - validated {@link Config}.
  */
 export function apply(ctx: Context, config: Config): void {
-  const runtime = resolveLanTrust(ctx.webServer.host, config.trustedHosts)
+  const runtime = resolveLanTrust(
+    ctx.webServer.host,
+    config.trustedHosts,
+    config.allowUnauthenticatedNetwork,
+  )
   // The loopback URL belongs to this host. Under SSH, the operator reaches it
   // through a local forwarding address that this process cannot derive.
   const handoffBrowser = config.openBrowser && !launchedThroughSsh(ctx)
@@ -270,19 +359,22 @@ export function apply(ctx: Context, config: Config): void {
         const webUrl = localWebUrl(connectionCtx)
         const authenticatedUrl = connectionCtx.connection.authenticatedUrl(webUrl)
         // Reuse the exact LAN snapshot provided to the /api trust fence.
-        const lanCandidate = runtime.lanAddresses[0]
+        const unauthenticatedCandidate = runtime.unauthenticatedNetworkRules[0]?.localAddress
+        const lanCandidate = unauthenticatedCandidate ?? runtime.lanAddresses[0]
         const port = connectionCtx.webServer.port
         const lanUrl = lanCandidate === undefined
           ? undefined
-          : connectionCtx.connection.authenticatedUrl(`http://${lanCandidate}:${String(port)}`)
+          : unauthenticatedCandidate === undefined
+            ? connectionCtx.connection.authenticatedUrl(`http://${lanCandidate}:${String(port)}`)
+            : `http://${lanCandidate}:${String(port)}`
+        const lanLabel = unauthenticatedCandidate === undefined ? 'LAN' : 'LAN/Tailscale'
         ANNOUNCED_ROOTS.add(connectionCtx.root)
         if (config.printUrl) {
-          console.log(`dsh web: ${authenticatedUrl}${lanUrl === undefined ? '' : ` (LAN: ${lanUrl})`}`)
-          // The all-interfaces bind is the operator's exposure decision; state its
-          // cost once next to the URL they will act on. The fence defends against
-          // browser-borne rebinding and cross-site requests, not against peers.
+          console.log(`dsh web: ${authenticatedUrl}${lanUrl === undefined ? '' : ` (${lanLabel}: ${lanUrl})`}`)
           if (runtime.lanAddresses.length > 0) {
-            console.log('dsh web warning: serving every interface unauthenticated — anyone who can reach this port can drive this harness')
+            console.log(unauthenticatedCandidate === undefined
+              ? 'dsh web warning: serving every interface; browser authentication remains required for network peers'
+              : 'dsh web warning: detected LAN and Tailscale peers can connect without browser authentication — use only on trusted networks')
           }
         }
         if (handoffBrowser) {
