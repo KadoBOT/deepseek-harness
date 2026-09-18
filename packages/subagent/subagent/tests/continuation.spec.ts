@@ -2516,6 +2516,56 @@ describe('continuable settlement delivery', () => {
   })
 })
 
+describe('continuable delegation deadline', () => {
+  it('reports a deadline-interrupted initial run with the deadline settlement line', async () => {
+    const hold = Promise.withResolvers<undefined>()
+    const adapter = new GatedAdapter([
+      { chunks: textResponse('never runs'), gate: hold.promise },
+      { chunks: textResponse('parent ack') },
+    ])
+    const { ctx, parent } = await setupWith(adapter)
+    const started = await ctx.subagents.startContinuable({ ...startSpec(parent), deadlineMs: 40 })
+    // The deadline, not the model, ends this turn: release the gate only after
+    // expiry so the cancelled turn can unwind to settlement.
+    setTimeout(() => { hold.resolve(undefined) }, 100)
+    await waitNoActivation(ctx, started.childId)
+    await vi.waitFor(() => { expect(settlementNotices(parent)).toHaveLength(1) })
+    expect(settlementNotices(parent)[0]!.text).toBe(
+      `Background subagent ${started.childId} ran past its delegation deadline and was stopped before it finished.`
+      + '\nIt left no closing message.',
+    )
+  })
+
+  it('disarms the deadline when the parent sends before expiry', async () => {
+    const hold = Promise.withResolvers<undefined>()
+    const adapter = new GatedAdapter([
+      { chunks: textResponse('never runs'), gate: hold.promise },
+      { chunks: textResponse('parent ack') },
+    ])
+    const { ctx, parent } = await setupWith(adapter)
+    const started = await ctx.subagents.startContinuable({ ...startSpec(parent), deadlineMs: 40 })
+    // Re-engagement is a fresh mandate: the unattended bound no longer applies.
+    await ctx.subagents.sendMessage(parent, started.childId, message('fresh mandate'), { signal: testSignal })
+    // Past the original expiry with the child still hung: no interrupt, no notice.
+    await new Promise(resolve => setTimeout(resolve, 120))
+    expect(ctx.agents.get(started.childId)).toBeDefined()
+    expect(settlementNotices(parent)).toEqual([])
+    // Release the gate so teardown can dispose the still-hung child.
+    hold.resolve(undefined)
+    await drainManager(ctx)
+  })
+
+  it.each([
+    { label: 'zero', value: 0 },
+    { label: 'negative', value: -1 },
+    { label: 'fractional', value: 1.5 },
+  ])('rejects deadlineMs=$label without establishing a child', async ({ value }) => {
+    const { ctx, parent } = await setup([])
+    await expect(ctx.subagents.startContinuable({ ...startSpec(parent), deadlineMs: value }))
+      .rejects.toThrow('continuable deadlineMs must be a positive safe integer of milliseconds')
+  })
+})
+
 describe('continuable lifecycle observation', () => {
   it('emits one paired start/end per residency epoch', async () => {
     const { ctx, parent } = await setup([textResponse('first'), textResponse('second')])

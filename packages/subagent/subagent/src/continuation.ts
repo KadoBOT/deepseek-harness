@@ -107,6 +107,14 @@ export interface ContinuableStartSpec {
   readonly request: Omit<SubagentStartRequest, 'label' | 'signal' | 'outputSchema'>
   /** Caller cancellation, owning the operation only until inbox acceptance. */
   readonly signal: AbortSignal
+  /**
+   * Optional wall-clock bound in milliseconds on the child's initial
+   * unattended run, armed at inbox acceptance. A parent delivery clears it:
+   * re-engagement is a fresh mandate, so the deadline only ever bounds work
+   * the parent is not steering. Memory-held by the manager, never durable: a
+   * process restart sheds it, and a resumed child answers to its live parent.
+   */
+  readonly deadlineMs?: number
 }
 
 /** Identities returned once a continuable child accepted its initial prompt. */
@@ -232,6 +240,13 @@ interface Activation {
    * not exist, so its teardown owes the parent no settlement account.
    */
   announced: boolean
+  /**
+   * Whether this epoch's initial unattended run outlived its delegation
+   * deadline and the manager interrupted its turn. Set only by the deadline
+   * timer, read by the settlement notice, and reset when the parent
+   * re-engages the child with a follow-up delivery.
+   */
+  deadlineFired: boolean
   /** Renewed whenever a settlement watcher must re-observe quiescence. */
   poke: PromiseWithResolvers<void>
 }
@@ -321,10 +336,16 @@ function continuableInitialPrompt(parentId: SessionId, prompt: ContentBlock[]): 
  * the parent's own task vocabulary.
  * @param childId - the durable child the parent knows by id.
  * @param stopReason - how the child's last ordinary turn ended.
+ * @param deadlineFired - whether the manager deadline interrupted this epoch:
+ *   reported ahead of the turn vocabulary, since the stop was imposed rather
+ *   than produced by the child.
  * @returns the model-facing opening line of the settlement notice.
  */
-function settlementSummary(childId: SessionId, stopReason: SubagentResult['stopReason']): string {
+function settlementSummary(childId: SessionId, stopReason: SubagentResult['stopReason'], deadlineFired = false): string {
   const subject = `Background subagent ${childId}`
+  if (deadlineFired) {
+    return `${subject} ran past its delegation deadline and was stopped before it finished.`
+  }
   switch (stopReason) {
     case 'completed':
       return `${subject} finished and will do no further work unless you send it more.`
@@ -384,6 +405,13 @@ class ChildLock {
 export class SubagentContinuationManager {
   /** Child session id → its live Activation. Process-local, never durable. */
   private activations = new Map<SessionId, Activation>()
+  /**
+   * Child session id → its armed delegation-deadline timer. Process-local like
+   * {@link activations}: armed at inbox acceptance, cleared on settlement,
+   * disposal, or a re-engaging parent delivery. The fired marker itself lives
+   * on the Activation so it survives timer cleanup through to the notice.
+   */
+  private readonly deadlines = new Map<SessionId, ReturnType<typeof setTimeout>>()
   /** Materializations admitted before drain, tracked through publication or rollback. */
   private readonly materializations = new Set<Materialization>()
   private readonly locks = new ChildLock()
@@ -440,6 +468,10 @@ export class SubagentContinuationManager {
     this.assertAdmitting(parent)
     const persistence = this.requirePersistence()
     assertSubagentMaxDepth(request.maxDepth)
+    if (spec.deadlineMs !== undefined
+      && (!Number.isSafeInteger(spec.deadlineMs) || spec.deadlineMs < 1)) {
+      throw new TypeError('continuable deadlineMs must be a positive safe integer of milliseconds')
+    }
     const childId = spec.childId ?? brandString<SessionId>(randomUUID())
     this.assertChildIdAvailable(childId)
     const childDepth = resolveChildDepth(parent, request.maxDepth)
@@ -511,6 +543,7 @@ export class SubagentContinuationManager {
           parent,
         )
       })
+      if (spec.deadlineMs !== undefined) this.armDeadline(childId, spec.deadlineMs)
       return { childId, messageId }
     } catch (error: unknown) {
       releaseHold()
@@ -651,6 +684,11 @@ export class SubagentContinuationManager {
     options: ChildDeliveryOptions,
   ): Promise<MessageId> {
     this.assertAdmitting(parent)
+    // Re-engagement is a fresh mandate: the deadline bounded the unattended
+    // run, so a parent delivery disarms the timer and resets the marker.
+    this.clearDeadline(childId)
+    const live = this.activations.get(childId)
+    if (live !== undefined) live.deadlineFired = false
     // Same hold as `startContinuable`: an idle continuation-managed parent
     // must not settle underneath a cold resume it is authorizing.
     const releaseHold = this.holdOwnership(parent, childId)
@@ -767,6 +805,50 @@ export class SubagentContinuationManager {
       authority.kind === 'user' ? { kind: 'user' } : { kind: 'parent' },
       { keepInbox: true },
     )
+  }
+
+  /**
+   * Arm the delegation deadline for one accepted child, bounding its initial
+   * unattended run from inbox acceptance. A re-engaging parent delivery
+   * ({@link deliverToChild}), settlement, or disposal clears it; expiry
+   * interrupts the live turn and marks the Activation for the notice.
+   * @param childId - the durable child the deadline bounds.
+   * @param deadlineMs - positive safe-integer milliseconds, validated by the caller.
+   */
+  private armDeadline(childId: SessionId, deadlineMs: number): void {
+    this.deadlines.set(childId, setTimeout(() => { this.onDeadline(childId) }, deadlineMs))
+  }
+
+  /** Clear an armed deadline timer without touching the child. Idempotent. */
+  private clearDeadline(childId: SessionId): void {
+    const timer = this.deadlines.get(childId)
+    if (timer === undefined) return
+    clearTimeout(timer)
+    this.deadlines.delete(childId)
+  }
+
+  /**
+   * Interrupt the live turn of a child whose deadline expired and mark the
+   * Activation so the settlement notice reports the deadline, not a generic
+   * stop. A child already gone or disposing settles on its own terms: the
+   * entry is dropped without marking.
+   * @param childId - the durable child whose timer fired.
+   */
+  private onDeadline(childId: SessionId): void {
+    const activation = this.activations.get(childId)
+    /* v8 ignore next 3 -- every teardown path clears the deadline when it opens
+     * the disposal transaction and every parent delivery clears it on arrival,
+     * so expiry only ever observes a live, undisposed Activation. */
+    if (activation === undefined || activation.disposal !== undefined) {
+      this.deadlines.delete(childId)
+      return
+    }
+    activation.deadlineFired = true
+    // The manager owns this child's lifecycle, so it cancels the turn
+    // directly instead of presenting an authority through interrupt(): no new
+    // public authority variant, no authorization surface change. Parent cause,
+    // inbox kept — the same turn-stop an ancestor interrupt requests.
+    activation.handle.agent.cancel({ kind: 'parent' }, { keepInbox: true })
   }
 
   /** Deliver one resident continuable child's message to its live direct parent. */
@@ -1257,6 +1339,7 @@ export class SubagentContinuationManager {
       disposal: undefined,
       accepted: new Set(),
       announced: false,
+      deadlineFired: false,
       poke: Promise.withResolvers<void>(),
     }
     // After transfer, any failure must dispose the created handle, remove the
@@ -1306,6 +1389,7 @@ export class SubagentContinuationManager {
       try {
         await activation.handle.dispose()
       } finally {
+        this.clearDeadline(activation.childId)
         this.activations.delete(activation.childId)
         this.releaseOwnership(activation.childId)
       }
@@ -1504,6 +1588,7 @@ export class SubagentContinuationManager {
   private dispose(activation: Activation): Promise<void> {
     const existing = activation.disposal
     if (existing !== undefined) return existing
+    this.clearDeadline(activation.childId)
     const completion = Promise.withResolvers<void>()
     // Presence is the admission cutoff. Assign it before the async helper starts
     // because that helper cancels Agents and may synchronously re-enter callers.
@@ -1625,7 +1710,7 @@ export class SubagentContinuationManager {
     try {
       const parent = this.ctx.agents.get(activation.parentSession)
       if (parent === undefined) return
-      const summary = settlementSummary(activation.childId, terminal.stopReason)
+      const summary = settlementSummary(activation.childId, terminal.stopReason, activation.deadlineFired)
       const message = createUserMessage({
         content: [
           { type: 'text' as const, text: summary },

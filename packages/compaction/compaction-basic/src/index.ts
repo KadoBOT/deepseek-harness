@@ -6,7 +6,7 @@
 
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { CompactionEngine, ManualCompactionError } from '@deepseek-ai/dsh-compaction'
+import { CompactionEngine, ManualCompactionError, toolPairingBalancedAfter } from '@deepseek-ai/dsh-compaction'
 import type { CompactionResult, CompactionTrigger } from '@deepseek-ai/dsh-compaction'
 import type { TokenMeter } from '@deepseek-ai/dsh-token-meter'
 import type { Session, SessionSeq } from '@deepseek-ai/dsh-session'
@@ -69,6 +69,40 @@ function conversationTarget(
   if (agent.options.provider === undefined || agent.options.provider.length === 0
     || agent.options.model === undefined || agent.options.model.length === 0) return undefined
   return { provider: agent.options.provider, model: agent.options.model }
+}
+
+/** Whether a compaction failure is a provider-confirmed context overflow, unwrapping manual classification. */
+function isOverflowError(error: unknown): boolean {
+  let current: unknown = error
+  for (let depth = 0; depth < 4 && typeof current === 'object' && current !== null; depth += 1) {
+    if ((current as { code?: unknown }).code === CONTEXT_WINDOW_EXCEEDED_CODE) return true
+    current = (current as { cause?: unknown }).cause
+  }
+  return false
+}
+
+/**
+ * Shrink a head-anchored range after its summarization overflowed: halve the
+ * span, then step back to the nearest balanced end boundary. Returns `null`
+ * when no smaller balanced range exists.
+ * @param session - session supplying surface nodes for index math.
+ * @param start - fixed inclusive first seq of the head range.
+ * @param end - inclusive last seq that overflowed summarization.
+ * @returns the shrunken inclusive end seq, or `null`.
+ */
+function shrinkOverflowEnd(session: Session, start: SessionSeq, end: SessionSeq): SessionSeq | null {
+  const nodes = session.surface.nodes
+  const startIdx = nodes.indexOf(start)
+  const endIdx = nodes.indexOf(end)
+  if (startIdx === -1 || endIdx === -1 || endIdx - startIdx < 1) return null
+  let nextIdx = startIdx + Math.floor((endIdx - startIdx) / 2)
+  let candidate = nodes[nextIdx]
+  while (nextIdx > startIdx && (candidate === undefined || !toolPairingBalancedAfter(session, candidate))) {
+    nextIdx -= 1
+    candidate = nodes[nextIdx]
+  }
+  if (nextIdx <= startIdx || candidate === undefined) return null
+  return candidate
 }
 
 const thresholdRatioSchema = z.number()
@@ -288,7 +322,21 @@ export class BasicCompactionEngine extends CompactionEngine {
       }
       const range = selectCompactableRange(agent.session, measurement, 0)
       if (range === null) return null
-      return this.compactRegion(range.start, range.end, agent, signal)
+      // The maximal head range can itself exceed the summarizer window after
+      // an 819K-token overflow. Shrink head-anchored and retry so one useful
+      // reduction still lands instead of preserving the original error.
+      let end = range.end
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        try {
+          return await this.compactRegion(range.start, end, agent, signal)
+        } catch (error: unknown) {
+          if (!isOverflowError(error) || signal.aborted) throw error
+          const next = shrinkOverflowEnd(agent.session, range.start, end)
+          if (next === null) throw error
+          end = next
+        }
+      }
+      throw new Error('context-overflow compaction still overflows after shrinking the summary range')
     }
 
     const context = (await this.ctx.llm.resolveModelInfo(target.provider, target.model, signal)).context
@@ -383,22 +431,37 @@ export class BasicCompactionEngine extends CompactionEngine {
             0,
           )
           if (range === null) return null
-          return await compactSurfaceRegion(
-            this.regionDependencies(),
-            agent.session,
-            range.start,
-            range.end,
-            agent,
-            {
-              owner: null,
-              stability: 'selected-span',
-              ...sourceCommandId === undefined ? {} : { sourceCommandId },
-              flush: async () => {
-                await this.ctx.sessions.flush(agent.session)
-              },
-            },
-            operationSignal,
-          )
+          // Manual retries after an overflow face the same oversized-range
+          // summarizer failure as automatic recovery. Shrink head-anchored
+          // instead of reporting an unusable summary.
+          let end = range.end
+          for (let attempt = 0; attempt < 4; attempt += 1) {
+            try {
+              return await compactSurfaceRegion(
+                this.regionDependencies(),
+                agent.session,
+                range.start,
+                end,
+                agent,
+                {
+                  owner: null,
+                  stability: 'selected-span',
+                  ...sourceCommandId === undefined ? {} : { sourceCommandId },
+                  flush: async () => {
+                    await this.ctx.sessions.flush(agent.session)
+                  },
+                },
+                operationSignal,
+              )
+            } catch (error: unknown) {
+              if (!isOverflowError(error)) throw error
+              operationSignal.throwIfAborted()
+              const next = shrinkOverflowEnd(agent.session, range.start, end)
+              if (next === null) throw error
+              end = next
+            }
+          }
+          throw new Error('manual compaction still overflows after shrinking the summary range')
         } catch (error: unknown) {
           if (agentSignal.aborted && operationSignal.reason === agentSignal.reason) {
             throw new ManualCompactionError(

@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/proposed/feature/2026-09-14-delegation-sizing-guidance-and-legible-caps.md
+2026-09-14-delegation-sizing-guidance-and-legible-caps.md: 9ba126c1c513bfcb0fc840677f1f949cb5a083f1
+2026-09-14-delegation-sizing-guidance-and-legible-caps.zh.md: 2af1aa2886229a1f0e4707ac1a9b9c876ac62702

@@ -9,7 +9,7 @@
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {
-  CredentialInfo, LlmConfigurableProvider, LlmProviderInfo, SettingsNamespaceView,
+  AuthorizationFlowView, CredentialInfo, CredentialKey, LlmConfigurableProvider, LlmProviderInfo, SettingsNamespaceView,
 } from '@deepseek-ai/dsh-api-remotes/client'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
@@ -30,6 +30,8 @@ export interface ProviderDirectoryEntry {
   readonly settingsPath: readonly string[]
   readonly active: boolean
   readonly declared?: boolean
+  /** Credential record used by a provider-native authorization flow. */
+  readonly authorizationKey?: CredentialKey | undefined
 }
 
 /**
@@ -51,6 +53,7 @@ export function joinProviderDirectory(
     settingsPath: [...entry.settingsPath],
     active: active.has(entry.provider),
     ...entry.declared === undefined ? {} : { declared: entry.declared },
+    ...entry.authorizationKey === undefined ? {} : { authorizationKey: entry.authorizationKey },
   }))
   for (const provider of registered) {
     if (declared.has(provider.id)) continue
@@ -77,13 +80,15 @@ export interface ProviderRow {
   apiKeyEnv: string | undefined
   /** Credential state for {@link apiKeyEnv}, once described. */
   credential: CredentialInfo | undefined
+  /** Authorization record for this provider, when the adapter advertises one. */
+  authorization?: AuthorizationFlowView | undefined
   /**
    * Credential state for the page's derived `<ROUTE>_API_KEY`, described only
    * while the profile names no reference — the provider-card seat's
    * `keyConfigured` fact for dormant and keyless rows, matching the editor's
    * own derivation rule.
    */
-  derivedCredential?: CredentialInfo
+  derivedCredential?: CredentialInfo | undefined
 }
 
 /** Page snapshot. */
@@ -93,6 +98,8 @@ export interface ModelsSettingsState {
   error: string | null
   /** Credential enrichment failure; provider/settings rows remain usable. */
   credentialError: string | null
+  /** Authorization listing failure; normal provider rows remain usable. */
+  authorizationError: string | null
   /** Whether the settings provider accepts writes. */
   writable: boolean
   /** Every configurable provider joined with its configured/credential state. */
@@ -149,7 +156,8 @@ function apiKeyEnvOf(
 export class ModelsSettingsStore {
   /** The snapshot the section renders from (uSES-safe store). */
   readonly store: SnapshotStore<ModelsSettingsState> = createSnapshotStore<ModelsSettingsState>({
-    status: 'idle', error: null, credentialError: null, writable: false, rows: [], namespaces: new Map(),
+    status: 'idle', error: null, credentialError: null, authorizationError: null,
+    writable: false, rows: [], namespaces: new Map(),
   })
 
   /** Latest load wins; an older response never overwrites a newer one. */
@@ -178,9 +186,18 @@ export class ModelsSettingsStore {
   async load(): Promise<void> {
     const generation = ++this.generation
     this.store.update((s) => { s.status = 'loading'; s.error = null })
-    const [registered, declared] = await Promise.all([
+    const authorizationFace = (this.ctx.remote as unknown as {
+      authorization?: {
+        list: () => Promise<{ ok: true; value: readonly AuthorizationFlowView[] } | { ok: false; error: { message: string } }>
+      }
+    }).authorization
+    const authorizationList = authorizationFace === undefined
+      ? Promise.resolve({ ok: true as const, value: [] as readonly AuthorizationFlowView[] })
+      : authorizationFace.list()
+    const [registered, declared, authorizations] = await Promise.all([
       this.ctx.remote.llm.listProviders(),
       this.ctx.remote.llm.listConfigurableProviders(),
+      authorizationList,
       this.describeFace.ensure(),
     ])
     if (!registered.ok) { this.failLoad(generation, registered.error.message); return }
@@ -191,6 +208,11 @@ export class ModelsSettingsStore {
       return
     }
     const providers = joinProviderDirectory(registered.value, declared.value)
+    const authorizationByKey = new Map<CredentialKey, AuthorizationFlowView>()
+    const authorizationError = authorizations.ok ? null : authorizations.error.message
+    if (authorizations.ok) {
+      for (const flow of authorizations.value) authorizationByKey.set(flow.key, flow)
+    }
     const writable = mirrored.view.writable
     const views: readonly SettingsNamespaceView[] = mirrored.view.namespaces
     const namespaces = new Map(views.map(view => [view.ns, view]))
@@ -202,15 +224,21 @@ export class ModelsSettingsStore {
         && entry.settingsPath.length > 0
         && this.schema.hasPath(namespace.user, entry.settingsPath)
         && !this.schema.hasPath(namespace.base, entry.settingsPath)
+      const authorization = entry.authorizationKey === undefined
+        ? undefined
+        : authorizationByKey.get(entry.authorizationKey)
       return {
         entry,
         configured,
         removable,
         apiKeyEnv: apiKeyEnvOf(namespace, entry.settingsPath, this.schema),
         credential: undefined,
+        ...authorization === undefined ? {} : { authorization },
       }
     })
-    const refs = [...new Set(rows.map(row => row.apiKeyEnv ?? deriveKeyRef(row.entry.provider)))]
+    const refs = [...new Set(rows
+      .filter(row => row.apiKeyEnv !== undefined || row.entry.authorizationKey === undefined)
+      .map(row => row.apiKeyEnv ?? deriveKeyRef(row.entry.provider)))]
     let credentials: Record<string, CredentialInfo> = {}
     let credentialError: string | null = null
     if (refs.length > 0) {
@@ -226,10 +254,13 @@ export class ModelsSettingsStore {
       s.status = 'ready'
       s.error = null
       s.credentialError = credentialError
+      s.authorizationError = authorizationError
       s.writable = writable
       s.rows = rows.map((row) => {
         const named = row.apiKeyEnv === undefined ? undefined : credentials[row.apiKeyEnv]
-        const derived = row.apiKeyEnv !== undefined ? undefined : credentials[deriveKeyRef(row.entry.provider)]
+        const derived = row.apiKeyEnv !== undefined || row.entry.authorizationKey !== undefined
+          ? undefined
+          : credentials[deriveKeyRef(row.entry.provider)]
         return {
           ...row,
           ...named === undefined ? {} : { credential: named },
@@ -262,8 +293,12 @@ export class ModelsSettingsStore {
  */
 export function providerUsable(row: ProviderRow): boolean {
   if (!row.entry.active) return false
-  if (row.apiKeyEnv === undefined) return true
-  return row.credential?.configured === true
+  // An explicit profile reference remains authoritative until the user has
+  // deliberately switched it away; another provider's grant cannot change
+  // which credential this route sends to its adapter.
+  if (row.apiKeyEnv !== undefined) return row.credential?.configured === true
+  if (row.entry.authorizationKey !== undefined) return row.authorization?.configured === true
+  return true
 }
 
 /** First-run onboarding readiness derived only from the shared Models join. */

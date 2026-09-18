@@ -1680,6 +1680,44 @@ describe('automatic listener and loader composition', () => {
     expect(toolPairingBalancedAfter(session, currentResult!)).toBe(true)
   })
 
+  it('shrinks the head range when overflow summarization itself overflows', async () => {
+    const ctx = createContext(10_000)
+    const compact = new TestCompactionEngine(ctx, {
+      thresholdRatio: 1,
+      retainTokens: 900,
+    })
+    let calls = 0
+    const overflowError = Object.assign(new Error('summarizer overflow'), { code: CONTEXT_WINDOW_EXCEEDED_CODE })
+    const summarize = vi.spyOn(compact, 'summarize' as never)
+    summarize.mockImplementation(async (_input: SummarizationInput) => {
+      calls += 1
+      if (calls === 1) throw overflowError
+      return {
+        summary: [{ type: 'text', text: 'small checkpoint' }],
+        provider: 'summary-provider',
+        model: 'summary-model',
+      }
+    })
+    const session = conversation(4)
+
+    expect(await recover(ctx, agent(session, MODEL), overflow())).toBe(true)
+    expect(calls).toBe(2)
+    expect(session.snapshotEvents().some(event => event.type === 'compaction/summary')).toBe(true)
+  })
+
+  it('gives up after shrinking to an indivisible overflow range', async () => {
+    const ctx = createContext(10_000)
+    const compact = new TestCompactionEngine(ctx, {
+      thresholdRatio: 1,
+      retainTokens: 900,
+    })
+    const overflowError = Object.assign(new Error('always overflow'), { code: CONTEXT_WINDOW_EXCEEDED_CODE })
+    vi.spyOn(compact, 'summarize' as never).mockRejectedValue(overflowError)
+    const session = conversation(2)
+
+    expect(await recover(ctx, agent(session, MODEL), overflow())).toBe(false)
+  })
+
   it('does not retry when a backend reports success without replacing the surface', async () => {
     const ctx = createContext()
     const compact = new TestCompactionEngine(ctx)

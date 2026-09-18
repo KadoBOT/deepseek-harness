@@ -7,7 +7,8 @@
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {
-  CredentialInfo, LlmDiscoveredModel, LlmModelDiscoveryRequest,
+  AuthorizationAttemptId, AuthorizationAttemptView, AuthorizationFlowView, AuthorizationPromptId,
+  CredentialInfo, CredentialKey, LlmDiscoveredModel, LlmModelDiscoveryRequest,
   SettingsNamespaceView, SettingsPathOpView,
 } from '@deepseek-ai/dsh-api-remotes/client'
 
@@ -29,6 +30,33 @@ export type ModelDiscoveryOutcome =
   | { readonly kind: 'found'; readonly models: readonly LlmDiscoveredModel[] }
   /** The interrogation was refused, with the Host's own diagnostic. */
   | { readonly kind: 'refused'; readonly message: string }
+
+/** Result of a browser authorization mutation. */
+export type AuthorizationActionOutcome =
+  | { readonly attempt: AuthorizationAttemptView }
+  | { readonly refused: string }
+
+/** Result of listing browser authorization flows. */
+export type AuthorizationListOutcome =
+  | { readonly flows: readonly AuthorizationFlowView[] }
+  | { readonly refused: string }
+
+type RemoteCallResult<T> = { ok: true; value: T } | { ok: false; error: { message: string } }
+
+/** The generated Remote namespace's authorization face. Kept local so this
+ * package remains source-compatible while the assembly regenerates its face. */
+interface AuthorizationRemote {
+  list(): Promise<RemoteCallResult<readonly AuthorizationFlowView[]>>
+  begin(key: CredentialKey, method: string): Promise<RemoteCallResult<AuthorizationAttemptView>>
+  read(id: AuthorizationAttemptId): Promise<RemoteCallResult<AuthorizationAttemptView>>
+  respond(id: AuthorizationAttemptId, promptId: AuthorizationPromptId, answer: string): Promise<RemoteCallResult<AuthorizationAttemptView>>
+  cancel(id: AuthorizationAttemptId): Promise<RemoteCallResult<AuthorizationAttemptView>>
+  disconnect(key: CredentialKey): Promise<RemoteCallResult<void>>
+}
+
+function authorizationRemote(ctx: ClientContext): AuthorizationRemote {
+  return (ctx.remote as unknown as { authorization: AuthorizationRemote }).authorization
+}
 
 /** The Host operations the Models page and its cards invoke. */
 export interface ModelsOperations {
@@ -71,6 +99,18 @@ export interface ModelsOperations {
    * @returns the candidates, or the refusal.
    */
   discoverModels(settingsNs: string, request: LlmModelDiscoveryRequest): Promise<ModelDiscoveryOutcome>
+  /** List metadata for account-connection flows; secrets never cross this face. */
+  listAuthorization(): Promise<AuthorizationListOutcome>
+  /** Start one provider's OAuth flow. */
+  beginAuthorization(key: CredentialKey, method: string): Promise<AuthorizationActionOutcome>
+  /** Poll one pending authorization attempt. */
+  readAuthorization(id: AuthorizationAttemptId): Promise<AuthorizationActionOutcome>
+  /** Answer one visible authorization prompt. */
+  respondAuthorization(id: AuthorizationAttemptId, promptId: AuthorizationPromptId, answer: string): Promise<AuthorizationActionOutcome>
+  /** Cancel one pending authorization attempt. */
+  cancelAuthorization(id: AuthorizationAttemptId): Promise<AuthorizationActionOutcome>
+  /** Disconnect and remove one provider grant. */
+  disconnectAuthorization(key: CredentialKey): Promise<string | undefined>
 }
 
 /**
@@ -104,6 +144,30 @@ export function createModelsOperations(ctx: ClientContext): ModelsOperations {
       return response.ok
         ? { kind: 'found', models: response.value }
         : { kind: 'refused', message: response.error.message }
+    },
+    listAuthorization: async () => {
+      const response = await authorizationRemote(ctx).list()
+      return response.ok ? { flows: response.value } : { refused: response.error.message }
+    },
+    beginAuthorization: async (key, method) => {
+      const response = await authorizationRemote(ctx).begin(key, method)
+      return response.ok ? { attempt: response.value } : { refused: response.error.message }
+    },
+    readAuthorization: async (id) => {
+      const response = await authorizationRemote(ctx).read(id)
+      return response.ok ? { attempt: response.value } : { refused: response.error.message }
+    },
+    respondAuthorization: async (id, promptId, answer) => {
+      const response = await authorizationRemote(ctx).respond(id, promptId, answer)
+      return response.ok ? { attempt: response.value } : { refused: response.error.message }
+    },
+    cancelAuthorization: async (id) => {
+      const response = await authorizationRemote(ctx).cancel(id)
+      return response.ok ? { attempt: response.value } : { refused: response.error.message }
+    },
+    disconnectAuthorization: async (key) => {
+      const response = await authorizationRemote(ctx).disconnect(key)
+      return response.ok ? undefined : response.error.message
     },
   }
 }

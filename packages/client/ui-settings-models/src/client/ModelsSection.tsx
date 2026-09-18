@@ -15,10 +15,12 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { Button, IconPlusOutline16, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { SettingsNamespaceView } from '@deepseek-ai/dsh-api-remotes/client'
 import type { InjectFace, PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: pulls this package's SlotMap merge (the two Models child slots).
 import type {} from './slot-contract.ts'
 import { CustomProviderCard } from './CustomProviderCard.tsx'
+import { AuthorizationCard } from './AuthorizationCard.tsx'
 import { deriveKeyRef, protocolChoices, providerUsable } from './store.ts'
 import type { ModelsSettingsStore, ProviderRow } from './store.ts'
 import type { ModelsOperations } from './operations.ts'
@@ -76,6 +78,32 @@ interface EditorTarget extends ProviderIdentity {
   credentialRef?: string
   /** The adapter reports this route as one it does not ship (see {@link ProviderEditorProps.declared}). */
   declared?: boolean
+}
+
+/** Enable one authorized provider while removing only its API-key override. */
+export async function enableAuthorizationProfile(
+  row: ProviderRow,
+  namespace: SettingsNamespaceView,
+  schema: SettingsSchemaOperations,
+  operations: ModelsOperations,
+  inheritedKeyMessage: string,
+): Promise<string | undefined> {
+  const path = row.entry.settingsPath
+  const keyPath = [...path, 'apiKeyEnv']
+  // A composition-provided key remains after a user unset and would make the
+  // adapter choose API-key billing despite the newly authorized grant.
+  if (schema.hasPath(namespace.base, keyPath)) return inheritedKeyMessage
+  const profile = schema.getPath(namespace.value, path)
+  const ops = profile === undefined
+    ? [{ op: 'set' as const, path: [...path], value: {} }]
+    : schema.hasPath(namespace.user, keyPath)
+      ? [{ op: 'unset' as const, path: keyPath }]
+      : []
+  if (ops.length === 0) return undefined
+  const written = await operations.writeSettings(namespace.ns, ops, namespace.revision)
+  return written.kind === 'written'
+    ? undefined
+    : written.message
 }
 
 /** Values that vary around the shared provider-editor rendering. */
@@ -289,8 +317,12 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
   // One fact decides both first-run postures on this page and the onboarding
   // step: whether the user already has a provider to talk to.
   const anyUsable = state.rows.some(providerUsable)
-  const configured = state.rows.filter(row => row.configured)
-  const addable = state.rows.filter(row => !row.configured && row.entry.settingsNs !== '')
+  // A persisted grant keeps its route visible even when its settings profile
+  // was removed or disabled; that row offers Enable instead of disappearing.
+  const configured = state.rows.filter(row => row.configured || row.authorization !== undefined)
+  const addable = state.rows.filter(
+    row => !row.configured && row.authorization === undefined && row.entry.settingsNs !== '',
+  )
   const addTarget = adding ? editing : undefined
   const addNamespace = addTarget === undefined ? undefined : state.namespaces.get(addTarget.settingsNs)
   // The draft's directory row, for the card extension seat. A refresh can drop
@@ -303,12 +335,33 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
   // one whose schema names the protocols one may speak; without it mounted
   // there is nothing to declare and the entry point stays disabled.
   const protocols = protocolChoices(state.namespaces.get('llm-pi-ai'), schema)
+  const authorizationCard = (row: ProviderRow, namespace: SettingsNamespaceView): ReactNode => {
+    if (row.authorization === undefined) return null
+    return (
+      <AuthorizationCard
+        flow={row.authorization}
+        enabled={row.configured}
+        readOnly={!state.writable}
+        operations={operations}
+        t={t}
+        onChanged={() => { void controller.load() }}
+        onEnable={() => enableAuthorizationProfile(
+          row,
+          namespace,
+          schema,
+          operations,
+          t('accountInheritedKey'),
+        )}
+      />
+    )
+  }
 
   return (
     <div className={styles['section']}>
       <h2 className={styles['title']}>{t('title')}</h2>
       <p className={styles['intro']}>{t('intro')}</p>
       {!state.writable && state.status === 'ready' ? <p className={styles['notice']}>{t('readOnly')}</p> : null}
+      {state.authorizationError === null ? null : <p className={styles['notice']}>{t('accountUnavailable')}: {state.authorizationError}</p>}
       {savedIdentity === undefined
         ? null
         : (
@@ -341,6 +394,7 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
                   { provider: row.entry, configured: row.configured, keyConfigured: keyConfiguredOf(row) },
                   { entryKey: row.entry.settingsNs },
                 )}
+                {authorizationCard(row, namespace)}
               </li>
             )
           }
@@ -421,6 +475,7 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
                 { provider: row.entry, configured: row.configured, keyConfigured: keyConfiguredOf(row) },
                 { entryKey: row.entry.settingsNs },
               )}
+              {authorizationCard(row, namespace)}
               {open
                 ? renderProviderEditor({
                   target,
@@ -478,6 +533,7 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
                   { provider: addRow.entry, configured: addRow.configured, keyConfigured: keyConfiguredOf(addRow) },
                   { entryKey: addRow.entry.settingsNs },
                 )}
+              {addRow === undefined ? null : authorizationCard(addRow, addNamespace)}
             </div>
           )
           : declaring

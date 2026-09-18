@@ -51,6 +51,7 @@ Load the subagent service, an in-process or remote backend, and this tool; then 
 | `persona` | — | Per-child persona; requires the provider's `persona` capability |
 | `toolFilter` | — | Per-child global-tool restriction; requires the `toolFilter` capability |
 | `maxDepth` | `3` | Absolute delegation-depth cap (`0` forbids delegation); `'provider-managed'` sends no cap to an out-of-process provider |
+| `deadlineMs` | — | Optional delegation deadline in milliseconds: a run that does not settle in time is aborted and reported as a deadline expiry with split-don't-retry guidance. Absent leaves the run unbounded. For continuable children it bounds the initial unattended run: expiry interrupts the live turn, the settlement notice reports the deadline, and a parent delivery disarms it |
 
 The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-tool-subagent) is the exhaustive source for every accepted field and its JSDoc.
 

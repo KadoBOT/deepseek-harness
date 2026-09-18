@@ -133,6 +133,8 @@ persisted Session
 
 `SubagentRuntime.startContinuable()` 会预留稳定的子 agent id，对版本化的 `subagent/descriptor` payload 建立快照，向指定提供方索取其分离的 `ContinuableCreateSpec`，通过私有的 activation-owner 作用域创建子 Agent，建立任何可继续父级的所有权，并提交初始提示词。当收件箱（inbox）准入产出消息 id 时，它以 `{ childId, messageId }` resolve——无需等待轮次开始，也无需等待消息进入会话日志。在该准入之前的任何失败都会以两个 id 都不返回的方式 reject，并 dispose（资源释放）任何已创建的 handle，回滚 Activation 与父级所有权。
 
+启动参数中的可选 `deadlineMs` 约束子任务最初无人值守运行的时长，自收件箱准入起算。到期会以 parent 原因打断当前轮次并标记 Activation，使结算通知上报期限而非通用停止；父级的后续投递会解除计时器并重置标记，因为重新介入是一项新的委托。该期限只保存在管理器内存中，从不持久化：重启会丢弃它，而恢复的子任务听命于其在线父级。
+
 `SubagentRuntime.sendMessage()` 是唯一由模型编写消息的操作。它接收确切在线 sender 与目标 id，只允许直接 parent 或直接可继续 child，自行推导 sender 来源信息，并根据目标 child 的 Activation 驻留状态路由：
 
 | 目标 Activation 状态 | `sendMessage` |

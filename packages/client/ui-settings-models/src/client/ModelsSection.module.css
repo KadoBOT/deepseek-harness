@@ -40,6 +40,66 @@
   color: var(--dsw-alias-state-success-primary);
 }
 
+.authorizationCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0 2px;
+}
+
+.authorizationHead {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.authorizationTitle {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.authorizationHint,
+.authorizationNotice {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.authorizationActions {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.authorizationNotice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.authorizationNotice a {
+  color: var(--dsw-alias-state-business-primary);
+}
+
+.authorizationNotice code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--dsw-alias-markdown-inline-code);
+  color: var(--dsw-alias-label-primary);
+}
+
+.authorizationPrompt {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .rows {
   list-style: none;
   /* Extra air between the title/intro block and the first provider card. */

@@ -133,6 +133,8 @@ persisted Session
 
 `SubagentRuntime.startContinuable()` reserves the stable child id, snapshots the versioned `subagent/descriptor` payload, asks the named provider for its detached `ContinuableCreateSpec`, creates the child Agent through a private activation-owner scope, establishes any continuable-parent ownership, and submits the initial prompt. It resolves with `{ childId, messageId }` when inbox acceptance yields the message id — without waiting for the turn to start or for the message to enter the Session log. Every failure before that acceptance rejects with neither id, disposing any created handle and rolling back the Activation and parent ownership.
 
+An optional `deadlineMs` on the start spec bounds the child's initial unattended run from inbox acceptance. Expiry interrupts the live turn with a parent cause and marks the Activation, so the settlement notice reports the deadline instead of a generic stop; a parent delivery disarms the timer and resets the marker, since re-engagement is a fresh mandate. The deadline is manager memory, never durable: a restart sheds it, and a resumed child answers to its live parent.
+
 `SubagentRuntime.sendMessage()` is the sole model-authored message operation. It accepts the exact live sender plus a target id, permits only a direct parent or direct continuable child, derives sender attribution itself, and routes a direct-child target by Activation residency:
 
 | Target Activation state | `sendMessage` |

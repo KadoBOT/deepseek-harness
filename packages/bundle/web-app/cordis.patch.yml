@@ -41,6 +41,12 @@
 # `dsh.client` rows are the browser roster the modules node half scans into
 # window.__DSH_BOOT__; the modules row is simultaneously a host row.
 - insert:
+    # Credential-obtaining flows. The Models page signs a route in through this
+    # service, so a route whose provider ships an OAuth login (xai,
+    # openai-codex, anthropic) offers a connect control, not only a key field.
+    - id: authorization
+      name: '@deepseek-ai/dsh-authorization'
+
     # Host-owned opt-in sampled when a new Web session receives its preset
     # delegation tools. The Plugins page edits this settings namespace.
     - id: subagent-model-selection-settings

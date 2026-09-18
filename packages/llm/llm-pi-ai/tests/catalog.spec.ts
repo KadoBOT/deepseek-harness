@@ -1214,6 +1214,7 @@ describe('configurable-provider directory', () => {
       displayName: 'openai-codex',
       settingsNs: 'llm-pi-ai',
       settingsPath: ['providers', 'openai-codex'],
+      authorizationKey: LlmPiAi.recordKeyFor('openai-codex'),
       declared: false,
     })
   })

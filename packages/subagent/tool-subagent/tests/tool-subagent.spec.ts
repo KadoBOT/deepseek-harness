@@ -14,7 +14,7 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
-import type { SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
+import type { ContinuableStart, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
 import LocalJobRegistry from '@deepseek-ai/dsh-jobs-local'
 import * as SubagentSpawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import * as ToolTasks from '@deepseek-ai/dsh-tool-jobs'
@@ -323,7 +323,8 @@ describe('dsh-tool-subagent', () => {
       },
     })
     // Direct apply with only `provider` — no toolName, no agentOptions.
-    tool.apply(ctx, { provider: 'bare' })
+    // Depth is explicitly unmanaged: this fixture cannot enforce the default.
+    tool.apply(ctx, { provider: 'bare', maxDepth: 'provider-managed' })
     await new Promise(r => setTimeout(r, 10))
 
     expect(ctx.tools.schemas().some(s => s.name === 'subagent')).toBe(true)
@@ -1028,7 +1029,7 @@ describe('dsh-tool-subagent background mode', () => {
       inheritsParentContext: false,
       start: async () => { throw new Error('setup failed') },
     })
-    tool.apply(ctx, { provider: 'broken-start', toolName: 'subagent_broken' })
+    tool.apply(ctx, { provider: 'broken-start', toolName: 'subagent_broken', maxDepth: 'provider-managed' })
 
     const started = await ctx.tools.execute({
       signal: testToolSignal,
@@ -1059,7 +1060,7 @@ describe('dsh-tool-subagent background mode', () => {
         request.signal.addEventListener('abort', () => { reject(new Error('startup aborted')) }, { once: true })
       }),
     })
-    tool.apply(ctx, { provider: 'pending-start', toolName: 'subagent_pending' })
+    tool.apply(ctx, { provider: 'pending-start', toolName: 'subagent_pending', maxDepth: 'provider-managed' })
 
     await ctx.tools.execute({
       signal: testToolSignal,
@@ -1101,7 +1102,7 @@ describe('dsh-tool-subagent background mode', () => {
         }, { once: true })
       }),
     })
-    tool.apply(ctx, { provider: 'broken-start-rollback', toolName: 'subagent_broken_rollback' })
+    tool.apply(ctx, { provider: 'broken-start-rollback', toolName: 'subagent_broken_rollback', maxDepth: 'provider-managed' })
 
     await ctx.tools.execute({
       signal: testToolSignal,
@@ -1154,7 +1155,7 @@ describe('dsh-tool-subagent background mode', () => {
       },
     })
     // Direct apply preserves omitted agentOptions instead of applying schema defaults.
-    tool.apply(ctx, { provider: 'hanging', toolName: 'subagent_hang' })
+    tool.apply(ctx, { provider: 'hanging', toolName: 'subagent_hang', maxDepth: 'provider-managed' })
 
     const startOne = await ctx.tools.execute({ signal: testToolSignal, callId: ToolCallId('h1'), name: 'subagent_hang', arguments: { description: 'one', prompt: 'p', run_in_background: true }, agent: parent })
     const startTwo = await ctx.tools.execute({ signal: testToolSignal, callId: ToolCallId('h2'), name: 'subagent_hang', arguments: { description: 'two', prompt: 'p', run_in_background: true }, agent: parent })
@@ -1371,7 +1372,7 @@ describe('background preflight failure (no orphaned child, by construction)', ()
         }
       },
     })
-    tool.apply(ctx, { provider: 'probe', toolName: 'subagent_probe' })
+    tool.apply(ctx, { provider: 'probe', toolName: 'subagent_probe', maxDepth: 'provider-managed' })
 
     const result = await ctx.tools.execute({
       signal: testToolSignal,
@@ -1421,6 +1422,51 @@ describe('depth budget configuration', () => {
     expect(requests[0]?.toolFilter).toBeUndefined()
   })
 
+  it('applies the default maxDepth when apply() is invoked directly without Schemastery', async () => {
+    const requests: SubagentStartRequest[] = []
+    const ctx = await projectedContext()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(SubagentRuntime)
+    ctx.subagents.registerProvider({
+      name: 'direct',
+      capabilities: { agentOptions: false, outputSchema: true, depthLimit: true, toolFilter: true, persona: true },
+      inheritsParentContext: false,
+      start: async (request) => {
+        requests.push(request)
+        return {
+          id: SessionId('direct-child'),
+          localAgent: undefined,
+          result: Promise.resolve({ output: [{ type: 'text', text: 'ok' }], stopReason: 'completed' as const }),
+          dispose: async () => {},
+        }
+      },
+    })
+    // Direct apply() bypasses the Config schema default: the omission must
+    // still resolve to the default budget instead of staying capless.
+    tool.apply(ctx, { provider: 'direct' })
+    await callSubagent(ctx, { description: 'd', prompt: 'p' })
+    expect(requests[0]?.maxDepth).toBe(3)
+  })
+
+  it('rejects an omitted maxDepth on a provider without depthLimit when apply() is direct', async () => {
+    const ctx = await projectedContext()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(SubagentRuntime)
+    ctx.subagents.registerProvider({
+      name: 'no-depth-direct',
+      capabilities: { agentOptions: false, outputSchema: false, depthLimit: false, toolFilter: false, persona: false },
+      inheritsParentContext: false,
+      start: async () => { throw new Error('unreachable') },
+    })
+    // The resolved default is numeric, so a provider that cannot enforce it
+    // fails loud at mount; only 'provider-managed' opts out.
+    expect(() => {
+      tool.apply(ctx, { provider: 'no-depth-direct' })
+    }).toThrow(/provider-managed/)
+  })
+
   it('forwards an explicit tool filter unchanged instead of encoding the depth policy into it', async () => {
     const { ctx, requests } = await captureSetup({ toolFilter: { deny: ['dangerous'] }, maxDepth: 0 })
     await callSubagent(ctx, { description: 'd', prompt: 'p' })
@@ -1467,5 +1513,338 @@ describe('depth budget configuration', () => {
     await callSubagent(ctx, { description: 'd', prompt: 'p' })
     expect(requests[0]?.maxDepth).toBeUndefined()
     expect(requests[0]?.toolFilter).toBeUndefined()
+  })
+})
+
+describe('delegation deadline', () => {
+  const NO_DEPTH_CAPS = { agentOptions: false, outputSchema: false, depthLimit: false, toolFilter: false, persona: false }
+
+  /** A live parent with a dedicated scope fiber for structural task cleanup. */
+  function deadlineOwnerAgent(ctx: Context, sessionId: string): Agent {
+    const scopeFiber = ctx.plugin(() => {})
+    const id = SessionId(sessionId)
+    const agent = {
+      id,
+      ctx: scopeFiber.ctx,
+      inject: () => {},
+      options: {},
+      session: Session.create(id),
+    } as unknown as Agent
+    ctx.agents.register(agent)
+    return agent
+  }
+
+  async function deadlineBackgroundSetup(): Promise<{ ctx: Context; parent: Agent }> {
+    const ctx = await setup({ provider: 'mock' })
+    await ctx.plugin(AgentRegistry)
+    await ctx.plugin(LocalJobRegistry)
+    await ctx.plugin(ToolTasks, {})
+    return { ctx, parent: deadlineOwnerAgent(ctx, 'sess-parent') }
+  }
+
+  /** A provider that hangs until its signal aborts, then settles aborted. */
+  function registerHanging(ctx: Context, name: string): void {
+    ctx.subagents.registerProvider({
+      name,
+      capabilities: { ...NO_DEPTH_CAPS },
+      inheritsParentContext: false,
+      start: async (request) => {
+        await new Promise<void>((resolve) => {
+          request.signal.addEventListener('abort', () => { resolve() }, { once: true })
+        })
+        return {
+          id: SessionId(`${name}-child`),
+          localAgent: undefined,
+          result: Promise.resolve({ output: [], stopReason: 'aborted' as const }),
+          dispose: () => Promise.resolve(),
+        }
+      },
+    })
+  }
+
+  async function startBackgroundJob(
+    ctx: Context,
+    parent: Agent,
+    toolName: string,
+    callId: string,
+    description: string,
+  ) {
+    const started = await ctx.tools.execute({
+      signal: testToolSignal,
+      callId: ToolCallId(callId),
+      name: toolName,
+      arguments: { description, prompt: 'p', run_in_background: true },
+      agent: parent,
+    })
+    expect(text(started)).toBe('started background subagent job subagent-1')
+  }
+
+  async function readBackgroundJob(ctx: Context, parent: Agent, callId: string) {
+    const output = await ctx.tools.execute({
+      signal: testToolSignal,
+      callId: ToolCallId(callId),
+      name: 'job_output',
+      arguments: { job_id: 'subagent-1', wait: true },
+      agent: parent,
+    })
+    return text(output)
+  }
+
+  it('settles a background run past its deadline as failed with split-don\'t-retry guidance', async () => {
+    const { ctx, parent } = await deadlineBackgroundSetup()
+    registerHanging(ctx, 'tardy')
+    tool.apply(ctx, { provider: 'tardy', toolName: 'subagent_tardy', maxDepth: 'provider-managed', deadlineMs: 30 })
+    await startBackgroundJob(ctx, parent, 'subagent_tardy', 'tardy-start', 'tardy task')
+    const output = await readBackgroundJob(ctx, parent, 'tardy-output')
+    expect(output).toContain('[status: failed, delegation deadline exceeded after 30ms: tardy task; split the task')
+  })
+
+  it('keeps a user kill as killed when it arrives before the deadline', async () => {
+    const { ctx, parent } = await deadlineBackgroundSetup()
+    registerHanging(ctx, 'doomed')
+    tool.apply(ctx, { provider: 'doomed', toolName: 'subagent_doomed', maxDepth: 'provider-managed', deadlineMs: 5000 })
+    await startBackgroundJob(ctx, parent, 'subagent_doomed', 'doomed-start', 'doomed task')
+    await ctx.tools.execute({
+      signal: testToolSignal,
+      callId: ToolCallId('doomed-kill'),
+      name: 'job_kill',
+      arguments: { job_id: 'subagent-1' },
+      agent: parent,
+    })
+    const output = await readBackgroundJob(ctx, parent, 'doomed-output')
+    expect(output).toContain('killed')
+    expect(output).not.toContain('deadline')
+  })
+
+  it('does not blame the deadline when the provider aborts itself before expiry', async () => {
+    const { ctx, parent } = await deadlineBackgroundSetup()
+    ctx.subagents.registerProvider({
+      name: 'selfabort',
+      capabilities: { ...NO_DEPTH_CAPS },
+      inheritsParentContext: false,
+      start: async () => ({
+        id: SessionId('selfabort-child'),
+        localAgent: undefined,
+        result: Promise.resolve({ output: [], stopReason: 'aborted' as const }),
+        // Slow disposal lets the armed timer fire while the outcome is
+        // already decided; the guard must suppress the misattribution.
+        dispose: () => new Promise<void>(resolve => setTimeout(resolve, 150)),
+      }),
+    })
+    tool.apply(ctx, { provider: 'selfabort', toolName: 'subagent_selfabort', maxDepth: 'provider-managed', deadlineMs: 30 })
+    await startBackgroundJob(ctx, parent, 'subagent_selfabort', 'selfabort-start', 'selfabort task')
+    const output = await readBackgroundJob(ctx, parent, 'selfabort-output')
+    expect(output).toContain('killed')
+    expect(output).not.toContain('deadline')
+  })
+
+  it('keeps provider failure detail alongside the deadline when the child fails after expiry', async () => {
+    const { ctx, parent } = await deadlineBackgroundSetup()
+    ctx.subagents.registerProvider({
+      name: 'latefail',
+      capabilities: { ...NO_DEPTH_CAPS },
+      inheritsParentContext: false,
+      // Ignores the abort and fails late: both the deadline and the child
+      // failure are true, so both belong in the outcome.
+      start: () => ({
+        id: SessionId('latefail-child'),
+        localAgent: undefined,
+        result: new Promise(resolve => setTimeout(
+          () => { resolve({ output: [], stopReason: 'error' as const, diagnostic: 'remote blew up' }) },
+          80,
+        )),
+        dispose: () => Promise.resolve(),
+      }),
+    })
+    tool.apply(ctx, { provider: 'latefail', toolName: 'subagent_latefail', maxDepth: 'provider-managed', deadlineMs: 30 })
+    await startBackgroundJob(ctx, parent, 'subagent_latefail', 'latefail-start', 'latefail task')
+    const output = await readBackgroundJob(ctx, parent, 'latefail-output')
+    expect(output).toContain('delegation deadline exceeded after 30ms')
+    expect(output).toContain('remote blew up')
+  })
+
+  it('reports a late success as success even when the deadline fired first', async () => {
+    const { ctx, parent } = await deadlineBackgroundSetup()
+    ctx.subagents.registerProvider({
+      name: 'latesuccess',
+      capabilities: { ...NO_DEPTH_CAPS },
+      inheritsParentContext: false,
+      // Ignores the abort and finishes late: the work completed, so the
+      // outcome stays a success and the fired timer changes nothing.
+      start: () => ({
+        id: SessionId('latesuccess-child'),
+        localAgent: undefined,
+        result: new Promise(resolve => setTimeout(
+          () => { resolve({ output: [{ type: 'text', text: 'late but fine' }], stopReason: 'completed' as const }) },
+          80,
+        )),
+        dispose: () => Promise.resolve(),
+      }),
+    })
+    tool.apply(ctx, { provider: 'latesuccess', toolName: 'subagent_latesuccess', maxDepth: 'provider-managed', deadlineMs: 30 })
+    await startBackgroundJob(ctx, parent, 'subagent_latesuccess', 'latesuccess-start', 'latesuccess task')
+    const output = await readBackgroundJob(ctx, parent, 'latesuccess-output')
+    expect(output).toContain('late but fine')
+    expect(output).not.toContain('deadline')
+  })
+
+  it('fails a foreground run with the deadline headline and the preserved partial text', async () => {
+    const ctx = await setup({ provider: 'mock' })
+    registerHanging(ctx, 'fgtardy')
+    tool.apply(ctx, { provider: 'fgtardy', toolName: 'subagent_fgtardy', maxDepth: 'provider-managed', deadlineMs: 30 })
+    const result = await ctx.tools.execute({
+      signal: testToolSignal,
+      callId: ToolCallId('fgtardy-1'),
+      name: 'subagent_fgtardy',
+      arguments: { description: 'fg tardy', prompt: 'p', run_in_background: false },
+      agent: fakeAgent(),
+    })
+    expect(result.isError).toBe(true)
+    expect(text(result)).toContain('delegation deadline exceeded after 30ms: fg tardy')
+    expect(text(result)).toContain('subagent run was cancelled')
+  })
+
+  it('lets a parent abort win over an armed foreground deadline', async () => {
+    const ctx = await setup({ provider: 'mock' })
+    registerHanging(ctx, 'fgdoomed')
+    tool.apply(ctx, { provider: 'fgdoomed', toolName: 'subagent_fgdoomed', maxDepth: 'provider-managed', deadlineMs: 5000 })
+    const controller = new AbortController()
+    const pending = ctx.tools.execute({
+      signal: controller.signal,
+      callId: ToolCallId('fgdoomed-1'),
+      name: 'subagent_fgdoomed',
+      arguments: { description: 'fg doomed', prompt: 'p', run_in_background: false },
+      agent: fakeAgent(),
+    })
+    setTimeout(() => { controller.abort('parent gave up') }, 20)
+    const result = await pending
+    expect(result.isError).toBe(true)
+    expect(text(result)).not.toContain('deadline')
+    expect(text(result)).toMatch(/cancelled|aborted/i)
+  })
+
+  it('keeps an independent child failure unchanged when it lands before expiry', async () => {
+    const ctx = await setup({ provider: 'mock' })
+    ctx.subagents.registerProvider({
+      name: 'fastfail',
+      capabilities: { ...NO_DEPTH_CAPS },
+      inheritsParentContext: false,
+      start: async () => ({
+        id: SessionId('fastfail-child'),
+        localAgent: undefined,
+        result: Promise.resolve({ output: [], stopReason: 'error' as const, diagnostic: 'fast failure' }),
+        // Slow disposal lets the armed timer fire while the failure is
+        // already decided; the guard must leave the original error alone.
+        dispose: () => new Promise<void>(resolve => setTimeout(resolve, 150)),
+      }),
+    })
+    tool.apply(ctx, { provider: 'fastfail', toolName: 'subagent_fastfail', maxDepth: 'provider-managed', deadlineMs: 30 })
+    const result = await ctx.tools.execute({
+      signal: testToolSignal,
+      callId: ToolCallId('fastfail-1'),
+      name: 'subagent_fastfail',
+      arguments: { description: 'fast fail', prompt: 'p', run_in_background: false },
+      agent: fakeAgent(),
+    })
+    expect(result.isError).toBe(true)
+    expect(text(result)).toContain('fast failure')
+    expect(text(result)).not.toContain('deadline')
+  })
+
+  it('runs to success when the work finishes before the deadline', async () => {
+    const ctx = await setup({ provider: 'mock', deadlineMs: 5000 }, { reply: 'prompt answer' })
+    const result = await callSubagent(ctx, {
+      description: 'quick job',
+      prompt: 'answer fast',
+      run_in_background: false,
+    })
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected subagent success')
+    expect(text(result)).toBe('prompt answer')
+  })
+
+  it.each([
+    { label: 'zero', value: 0 },
+    { label: 'negative', value: -1 },
+    { label: 'NaN', value: Number.NaN },
+  ])('rejects deadlineMs=$label when the plugin loads', async ({ value }) => {
+    await expect(setup({ provider: 'mock', deadlineMs: value }))
+      .rejects.toThrow()
+  })
+
+  it('wraps a non-Error rejection under the deadline headline', async () => {
+    const ctx = await setup({ provider: 'mock' })
+    ctx.subagents.registerProvider({
+      name: 'rawreject',
+      capabilities: { ...NO_DEPTH_CAPS },
+      inheritsParentContext: false,
+      // Ignores the abort and rejects with a bare value after expiry.
+      start: () => ({
+        id: SessionId('rawreject-child'),
+        localAgent: undefined,
+        result: new Promise((_, reject) => setTimeout(() => {
+          // oxlint-disable-next-line typescript/prefer-promise-reject-errors -- a bare rejection is the scenario.
+          reject('raw failure')
+        }, 80)),
+        dispose: () => Promise.resolve(),
+      }),
+    })
+    tool.apply(ctx, { provider: 'rawreject', toolName: 'subagent_rawreject', maxDepth: 'provider-managed', deadlineMs: 30 })
+    const result = await ctx.tools.execute({
+      signal: testToolSignal,
+      callId: ToolCallId('rawreject-1'),
+      name: 'subagent_rawreject',
+      arguments: { description: 'raw reject', prompt: 'p', run_in_background: false },
+      agent: fakeAgent(),
+    })
+    expect(result.isError).toBe(true)
+    expect(text(result)).toContain('delegation deadline exceeded after 30ms')
+    expect(text(result)).toContain('raw failure')
+  })
+
+  it('forwards a configured deadlineMs to startContinuable and omits it when unconfigured', async () => {
+    const ctx = await projectedContext()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(SubagentRuntime)
+    ctx.subagents.registerProvider({
+      name: 'cont',
+      capabilities: { agentOptions: false, outputSchema: false, depthLimit: false, toolFilter: false, persona: false },
+      inheritsParentContext: false,
+      start: async () => { throw new Error('one-shot path must not run') },
+      prepareContinuable: async () => ({}),
+    })
+    const calls: unknown[] = []
+    vi.spyOn(ctx.subagents, 'startContinuable').mockImplementation(async (spec) => {
+      calls.push(spec)
+      return { childId: SessionId('cont-child'), messageId: 'msg-1' } as unknown as ContinuableStart
+    })
+    await ctx.plugin(tool, {
+      provider: 'cont',
+      toolName: 'subagent_armed',
+      backgroundMode: 'continuable',
+      maxDepth: 'provider-managed',
+      deadlineMs: 100,
+    })
+    await ctx.plugin(tool, {
+      provider: 'cont',
+      toolName: 'subagent_plain',
+      backgroundMode: 'continuable',
+      maxDepth: 'provider-managed',
+    })
+    const parent = fakeAgent()
+    for (const [toolName, callId] of [['subagent_armed', 'cont-armed'], ['subagent_plain', 'cont-plain']] as const) {
+      const started = await ctx.tools.execute({
+        signal: testToolSignal,
+        callId: ToolCallId(callId),
+        name: toolName,
+        arguments: { description: 'd', prompt: 'p' },
+        agent: parent,
+      })
+      expect(text(started)).toBe('started subagent cont-child')
+    }
+    expect(calls).toHaveLength(2)
+    expect(calls[0]).toMatchObject({ deadlineMs: 100 })
+    expect(calls[1]).not.toHaveProperty('deadlineMs')
   })
 })

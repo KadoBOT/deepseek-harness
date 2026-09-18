@@ -54,6 +54,22 @@ async function boot(
 }
 
 describe('login flows in a real composition', () => {
+  it('identifies account sign-in records without changing API-key providers', async () => {
+    const ctx = await boot(await home(), {})
+    const directory = ctx.llm.listConfigurableProviders()
+
+    expect(directory.find(entry => entry.provider === 'openai-codex')).toMatchObject({
+      authorizationKey: LlmPiAi.recordKeyFor('openai-codex'),
+    })
+    expect(directory.find(entry => entry.provider === 'xai')).toMatchObject({
+      authorizationKey: LlmPiAi.recordKeyFor('xai'),
+    })
+    expect(directory.find(entry => entry.provider === 'openrouter')).toMatchObject({
+      authorizationKey: LlmPiAi.recordKeyFor('openrouter'),
+    })
+    expect(directory.find(entry => entry.provider === 'deepseek')).not.toHaveProperty('authorizationKey')
+  })
+
   it('offers a sign-in for a provider no route names, once the seam is mounted', async () => {
     const ctx = await boot(await home(), {}, { authorization: true })
 

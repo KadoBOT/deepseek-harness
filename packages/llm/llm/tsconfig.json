@@ -18,6 +18,9 @@
       "path": "../../util/brand"
     },
     {
+      "path": "../../credentials/credentials"
+    },
+    {
       "path": "../../attachment/attachment"
     },
     {

@@ -5,6 +5,7 @@
  */
 
 import type { Branded } from '@deepseek-ai/dsh-brand'
+import type { CredentialKey } from '@deepseek-ai/dsh-credentials/types'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ToolCallId, ProviderRequestId, ReasoningEffortId } from './brand.ts'
 import type { Message } from './message.ts'
@@ -213,6 +214,8 @@ export interface LlmConfigurableProvider {
    * object; empty when the whole section is the profile.
    */
   settingsPath: readonly string[]
+  /** Credential record and account authorization flow used by this route, when offered by its adapter. */
+  authorizationKey?: CredentialKey
   /**
    * Whether the owning adapter knows this route only because configuration
    * declared it — a gateway or self-hosted server it ships nothing about.

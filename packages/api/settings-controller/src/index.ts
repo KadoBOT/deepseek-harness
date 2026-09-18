@@ -23,11 +23,14 @@ import type {
 } from '@deepseek-ai/dsh-settings/types'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
+import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { z } from 'zod'
 import { CredentialsController } from './credentials.ts'
+import { AuthorizationController } from './authorization.ts'
 import type { AgentPresetDirectoryOpenValue, SettingsDocumentOpenValue } from './types.ts'
 
 export { CredentialsController } from './credentials.ts'
+export { AuthorizationController } from './authorization.ts'
 export type * from './types.ts'
 
 const settingsNamespaceRequestSchema = z.object({ ns: z.string().min(1) })
@@ -36,6 +39,8 @@ const settingsNamespaceRequestSchema = z.object({ ns: z.string().min(1) })
 export interface Config {
   /** Override platform desktop-opener detection. */
   readonly nativeOpen?: boolean
+  /** Maximum time one browser authorization flow may run; positive and at most the platform timer limit. */
+  readonly authTimeoutMs?: number
 }
 
 /** Read abort state afresh after an awaited provider or opener call. */
@@ -86,7 +91,10 @@ declare module '@deepseek-ai/cordis' {
  * `settings/conflict` or `settings/rejected` with the service's message.
  */
 export class SettingsController extends TypertRemoteService {
-  static Config: Schema<Config> = Schema.object({ nativeOpen: Schema.boolean() })
+  static Config: Schema<Config> = Schema.object({
+    nativeOpen: Schema.boolean(),
+    authTimeoutMs: Schema.number().min(1).max(MAX_TIMER_DELAY_MS),
+  })
 
   private readonly openPath: (path: string, signal: AbortSignal) => Promise<void>
   private readonly openTextFile: (path: string, signal: AbortSignal) => Promise<void>
@@ -105,6 +113,9 @@ export class SettingsController extends TypertRemoteService {
     this.canOpenPath = internals.canOpenPath
       ?? (() => config.nativeOpen ?? (internals.openPath !== undefined || canOpenNativePath()))
     ctx.plugin(CredentialsController)
+    ctx.plugin(AuthorizationController, config.authTimeoutMs === undefined
+      ? {}
+      : { authTimeoutMs: config.authTimeoutMs })
   }
 
   /**

@@ -2967,12 +2967,20 @@ export interface Config {
    * budget belongs to the child runtime or its own deployment.
    */
   maxDepth?: number | 'provider-managed'
+  /**
+   * Optional delegation deadline in milliseconds. While armed, a run that does
+   * not settle in time is aborted and reported as a deadline expiry with
+   * split-don't-retry guidance; user cancellation still settles `killed`.
+   * Absent preserves today's unbounded behavior. Model-invisible: this never
+   * reaches the tool schema, only the run controller and the settlement text.
+   */
+  deadlineMs?: number
 }
 ```
 
 Depends on: [`AgentOptions`](subsystems/core.md)
 
-Source: [`packages/subagent/tool-subagent/src/index.ts:47`](../packages/subagent/tool-subagent/src/index.ts)
+Source: [`packages/subagent/tool-subagent/src/index.ts:55`](../packages/subagent/tool-subagent/src/index.ts)
 
 <a id="deepseek-aidsh-tool-terminal"></a>
 

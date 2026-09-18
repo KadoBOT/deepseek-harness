@@ -56,6 +56,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { isCredentialKeySegment } from '@deepseek-ai/dsh-credentials'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import { assertUsableApiKey, LlmError, resolveImageAttachmentAccess } from '@deepseek-ai/dsh-llm'
 import type { AdapterRegistrationHandle, DirectoryRegistrationHandle, LlmConfigurableProvider } from '@deepseek-ai/dsh-llm'
@@ -63,8 +64,8 @@ import type {} from '@deepseek-ai/dsh-fs'
 import type {} from '@deepseek-ai/dsh-settings'
 import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
 import { PiAiAdapter } from './adapter.ts'
-import { authContextFrom, credentialStoreFrom } from './auth.ts'
-import { catalogProviderIds } from './catalog.ts'
+import { authContextFrom, credentialStoreFrom, recordKeyFor } from './auth.ts'
+import { catalogProvider, catalogProviderIds } from './catalog.ts'
 import { assertServiceable, Config, resolveProfiles } from './config.ts'
 import type { ResolvedPiAiProviderProfile } from './config.ts'
 import { discoverModels } from './discovery.ts'
@@ -124,11 +125,20 @@ function directoryEntries(
   const catalog = new Set(catalogProviderIds())
   const entries = new Map<string, LlmConfigurableProvider>()
   const declare = (provider: string, displayName: string): void => {
+    // Naming the flow here is what gives the route's card a sign-in control.
+    // Only a catalog provider whose own `auth` ships an OAuth login has one —
+    // that is the same condition `loginMethods` registers an `oauth` method
+    // under — and a key outside the credential-record grammar addresses none.
+    const authorizationKey = isCredentialKeySegment(provider)
+      && catalogProvider(provider)?.auth.oauth !== undefined
+      ? recordKeyFor(provider)
+      : undefined
     entries.set(provider, {
       provider,
       displayName,
       settingsNs: NS,
       settingsPath: ['providers', provider],
+      ...authorizationKey === undefined ? {} : { authorizationKey },
       // Membership of the installed catalog, not of the settings document:
       // narrowing a shipped provider's models stores a profile too, and that
       // route is still one pi-ai knows.

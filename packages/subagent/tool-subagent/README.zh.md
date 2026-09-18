@@ -51,6 +51,7 @@ kind: "package-reference"
 | `persona` | — | 每个子 agent 独立的 persona；要求提供方具备 `persona` 能力 |
 | `toolFilter` | — | 每个子 agent 独立的全局工具限制；要求提供方具备 `toolFilter` 能力 |
 | `maxDepth` | `3` | 绝对委派深度上限（`0` 禁止委派）；`'provider-managed'` 不向进程外提供方发送上限 |
+| `deadlineMs` | — | 可选的委派期限（毫秒）：超时未结算的运行会被中止，并作为期限到期上报，附带拆分不重试指引。缺省时运行无上限。对可继续子任务，它约束最初无人值守的运行：到期打断当前轮次，结算通知上报期限，父级的后续投递会解除它 |
 
 生成的[配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-tool-subagent)是每个受支持字段及其 JSDoc 的穷尽式真源。
 

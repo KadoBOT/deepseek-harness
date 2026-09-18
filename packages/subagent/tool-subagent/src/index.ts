@@ -43,6 +43,14 @@ import {
 export const name = 'tool-subagent'
 export const inject = ['tools', 'subagents', 'systemPrompt', 'sessionProjections']
 
+/**
+ * Default recursion budget. The single source of truth for the `maxDepth`
+ * schema default below and the direct-apply fallback in {@link apply}: both
+ * entries must enforce the same budget because a direct `apply()` call
+ * bypasses Schemastery.
+ */
+export const DEFAULT_MAX_DEPTH = 3
+
 /** Config: which registered provider this tool delegates to, plus child defaults. */
 export interface Config {
   /** The `ctx.subagents` provider name to start runs on (e.g. `spawn`, `acp`). */
@@ -99,6 +107,14 @@ export interface Config {
    * budget belongs to the child runtime or its own deployment.
    */
   maxDepth?: number | 'provider-managed'
+  /**
+   * Optional delegation deadline in milliseconds. While armed, a run that does
+   * not settle in time is aborted and reported as a deadline expiry with
+   * split-don't-retry guidance; user cancellation still settles `killed`.
+   * Absent preserves today's unbounded behavior. Model-invisible: this never
+   * reaches the tool schema, only the run controller and the settlement text.
+   */
+  deadlineMs?: number
 }
 
 export const Config: z<Config> = z.object({
@@ -125,7 +141,9 @@ export const Config: z<Config> = z.object({
     allow: z.array(z.string()).default(undefined as unknown as string[]),
     deny: z.array(z.string()).default(undefined as unknown as string[]),
   }).default(undefined as unknown as { allow: string[]; deny: string[] }),
-  maxDepth: z.union([z.natural().max(Number.MAX_SAFE_INTEGER), z.const('provider-managed' as const)]).default(3),
+  maxDepth: z.union([z.natural().max(Number.MAX_SAFE_INTEGER), z.const('provider-managed' as const)]).default(DEFAULT_MAX_DEPTH),
+  // Absent by default: no deadline unless the deployment opts in.
+  deadlineMs: z.natural().min(1).max(Number.MAX_SAFE_INTEGER),
 })
 
 /** Render text blocks from the canonical JSON block array without trusting arbitrary values. */
@@ -136,6 +154,17 @@ function outputValueText(values: JsonValue[]): string {
       && value.type === 'text' && typeof value.text === 'string')
     .map(value => value.text)
     .join('')
+}
+
+/**
+ * Render the deadline-expiry outcome: what ran out of time and what the
+ * parent should do instead of retrying the same oversized task unchanged.
+ * @param deadlineMs - the configured deadline that fired.
+ * @param label - the delegated task's display description.
+ * @returns the deadline detail for failed outcomes and error results.
+ */
+function deadlineDetail(deadlineMs: number, label: string): string {
+  return `delegation deadline exceeded after ${deadlineMs}ms: ${label}; split the task and delegate per phase instead of retrying unchanged`
 }
 
 /** Settle pending startup without rejecting the task producer contract. */
@@ -304,9 +333,12 @@ function resolveDelegationRun(
 }
 
 export function apply(ctx: Context, config: Config): void {
-  // Direct apply() bypasses Schemastery's numeric constraints. A direct-apply
-  // omission stays capless (the schema default only runs through the loader).
-  if (config.maxDepth !== 'provider-managed') assertSubagentMaxDepth(config.maxDepth)
+  // A direct apply() call bypasses Schemastery's Config defaults, so resolve
+  // the omission here: both entries enforce DEFAULT_MAX_DEPTH unless the
+  // deployment opts out with 'provider-managed'.
+  const maxDepth = config.maxDepth ?? DEFAULT_MAX_DEPTH
+  if (maxDepth !== 'provider-managed') assertSubagentMaxDepth(maxDepth)
+  const requestMaxDepth = maxDepth === 'provider-managed' ? undefined : maxDepth
   // Reject an empty explicit filter at load instead of failing every delegation.
   if (config.toolFilter !== undefined && config.toolFilter.allow === undefined && config.toolFilter.deny === undefined) {
     throw new Error('tool-subagent: `toolFilter` is configured but names neither `allow` nor `deny` — remove the key or fill the filter')
@@ -319,7 +351,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.sessionProjections.register(subagentModelSelectionProjectionDefinition)
 
   const assertSubagentProviderConfiguration = (subagentProvider: SubagentProvider): void => {
-    if (typeof config.maxDepth === 'number' && !subagentProvider.capabilities.depthLimit) {
+    if (requestMaxDepth !== undefined && !subagentProvider.capabilities.depthLimit) {
       throw new Error(
         `tool-subagent: provider "${subagentProvider.name}" cannot enforce maxDepth (no depthLimit capability) — `
         + 'set maxDepth: \'provider-managed\' to leave the recursion budget to the provider',
@@ -504,7 +536,6 @@ export function apply(ctx: Context, config: Config): void {
             }
           }
           exec.signal.throwIfAborted()
-          const maxDepth = typeof config.maxDepth === 'number' ? config.maxDepth : undefined
           const request = {
             label: args.description,
             prompt: [{ type: 'text', text: args.prompt }] as ContentBlock[],
@@ -512,7 +543,7 @@ export function apply(ctx: Context, config: Config): void {
             ...requestedChildAgentOptions !== undefined ? { agentOptions: requestedChildAgentOptions } : {},
             ...config.persona !== undefined ? { persona: config.persona } : {},
             ...config.toolFilter !== undefined ? { toolFilter: config.toolFilter } : {},
-            ...maxDepth !== undefined ? { maxDepth } : {},
+            ...requestMaxDepth !== undefined ? { maxDepth: requestMaxDepth } : {},
           }
 
           const runSpec = resolveDelegationRun(args, { backgroundEnabled, continuable })
@@ -525,6 +556,7 @@ export function apply(ctx: Context, config: Config): void {
                 label: args.description,
                 request,
                 signal: exec.signal,
+                ...config.deadlineMs !== undefined ? { deadlineMs: config.deadlineMs } : {},
               })
               return { kind: 'continuable' as const, subagentId: started.childId }
             }
@@ -540,12 +572,50 @@ export function apply(ctx: Context, config: Config): void {
               owner: parent,
               run: () => {
                 const controller = new AbortController()
+                const deadlineMs: number | undefined = config.deadlineMs
+                // Mutable run state shared by the timer callback and the
+                // settlement wrappers below. One object (not narrowed locals)
+                // keeps every read boolean-typed across the async boundaries.
+                const state = { deadlineFired: false, resultSettled: false }
+                const markSettled = (): void => { state.resultSettled = true }
+                let timer: ReturnType<typeof setTimeout> | undefined
+                if (deadlineMs !== undefined) {
+                  timer = setTimeout(() => {
+                    // No aborted check: cancel() clears the timer first, so a
+                    // run here means no user cancellation arrived yet.
+                    if (state.resultSettled) return
+                    state.deadlineFired = true
+                    controller.abort(`delegation deadline exceeded after ${deadlineMs}ms`)
+                  }, deadlineMs)
+                }
                 const start = runtimeCtx.subagents.start(config.provider, { ...request, signal: controller.signal })
+                void start.then(
+                  (run) => { run.result.then(markSettled, markSettled) },
+                  markSettled,
+                )
                 return {
                   cancel: (reason?: string) => {
+                    if (timer !== undefined) clearTimeout(timer)
                     controller.abort(reason ?? 'background subagent task killed')
                   },
-                  done: settleStart(start, controller.signal),
+                  done: (async () => {
+                    try {
+                      const outcome = await settleStart(start, controller.signal)
+                      // A deadline that fired while the result was still pending
+                      // owns the outcome unless the child actually finished: a
+                      // bare abort becomes the failed deadline outcome, and
+                      // provider-authored failure detail is preserved alongside
+                      // the deadline headline. User cancellation and genuine
+                      // success keep their existing shapes.
+                      if (state.deadlineFired && deadlineMs !== undefined && outcome.status !== 'completed') {
+                        const prior = outcome.detail === undefined ? '' : `; child failure: ${outcome.detail}`
+                        return { status: 'failed', detail: `${deadlineDetail(deadlineMs, args.description)}${prior}` }
+                      }
+                      return outcome
+                    } finally {
+                      if (timer !== undefined) clearTimeout(timer)
+                    }
+                  })(),
                   // No readOutput: the child session owns intermediate detail.
                 }
               },
@@ -553,11 +623,57 @@ export function apply(ctx: Context, config: Config): void {
             return { kind: 'background' as const, jobId: id }
           }
 
-          const run: SubagentRun = await runtimeCtx.subagents.start(config.provider, {
-            ...request,
-            signal: exec.signal,
-          })
-          return settleForegroundRun(run)
+          const deadlineMs = config.deadlineMs
+          if (deadlineMs === undefined) {
+            const run: SubagentRun = await runtimeCtx.subagents.start(config.provider, {
+              ...request,
+              signal: exec.signal,
+            })
+            return settleForegroundRun(run)
+          }
+          // Deadline-armed foreground run: a linked controller carries the
+          // parent's cancellation through while the timer owns expiry. Either
+          // cancellation path clears the timer, so the callback only ever
+          // observes result settlement; result settlement suppresses a timer
+          // firing during disposal, as above.
+          const controller = new AbortController()
+          // Shared mutable state; see the background path above for why one
+          // object carries both flags instead of narrowed locals.
+          const state = { deadlineFired: false, resultSettled: false }
+          const markSettled = (): void => { state.resultSettled = true }
+          const timer = setTimeout(() => {
+            if (state.resultSettled) return
+            state.deadlineFired = true
+            controller.abort(`delegation deadline exceeded after ${deadlineMs}ms`)
+          }, deadlineMs)
+          const forwardAbort = (): void => {
+            clearTimeout(timer)
+            controller.abort(exec.signal.reason)
+          }
+          exec.signal.addEventListener('abort', forwardAbort, { once: true })
+          try {
+            const run: SubagentRun = await runtimeCtx.subagents.start(config.provider, {
+              ...request,
+              signal: controller.signal,
+            })
+            run.result.then(markSettled, markSettled)
+            return await settleForegroundRun(run)
+          } catch (error: unknown) {
+            // deadlineFired means the timer aborted the run while its result
+            // was still pending, so the run did not finish in time no matter
+            // what the provider settled afterwards; the embedded message keeps
+            // the provider's own failure and the preserved partial text below
+            // the deadline headline.
+            if (state.deadlineFired) {
+              throw new Error(
+                `${deadlineDetail(deadlineMs, args.description)}\n${error instanceof Error ? error.message : String(error)}`,
+              )
+            }
+            throw error
+          } finally {
+            clearTimeout(timer)
+            exec.signal.removeEventListener('abort', forwardAbort)
+          }
         },
       }))
       mounted = { subagentProvider, disposeTool }

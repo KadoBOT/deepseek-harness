@@ -377,6 +377,25 @@ describe('compactNow through the real loop', () => {
     await agent.whenIdle()
     expect(adapter.requests).toHaveLength(2)
   })
+
+  it('shrinks the manual range when the summarizer itself overflows', async () => {
+    const { compact } = detachedService()
+    const session = closedConversation(4)
+    const agent = fakeAgent(session, () => () => undefined)
+    let calls = 0
+    const original = compact.summarize.bind(compact)
+    compact.summarize = (async (input: SummarizationInput, owner: Agent, signal?: AbortSignal) => {
+      calls += 1
+      if (calls === 1) {
+        throw Object.assign(new Error('summarizer overflow'), { code: 'CONTEXT_WINDOW_EXCEEDED' })
+      }
+      return original(input, owner, signal)
+    }) as typeof compact.summarize
+
+    const result = await compact.compactNow(agent, SIGNAL)
+    expect(result).not.toBeNull()
+    expect(calls).toBe(2)
+  })
 })
 
 describe('compactNow transaction and failure classification', () => {
