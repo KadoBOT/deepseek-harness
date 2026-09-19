@@ -658,8 +658,30 @@ test('syncModels resolves base-route models and republishes nothing when routes 
   assert.equal(served().get('xai-work').piProvider.getModels()[0].contextWindow, 2000)
   assert.deepEqual(llm.replaces, [])
 
-  // A second pass with identical routes republishes nothing: the listener
+  // A second pass with identical rows republishes nothing: the listener
   // answering our own replace would otherwise chase its echo.
   assert.deepEqual(await runtime.syncModels(accounts), [])
   assert.deepEqual(llm.replaces, [])
+
+  // New rows on standing routes do republish, so selectors reload past what
+  // the previous sync snapshotted; the answering pass then stands down.
+  llm.listModels = async () => [
+    { id: 'grok-4.6', name: 'Grok 4.6', inputModalities: ['text'] },
+    { id: 'grok-4.7', name: 'Grok 4.7', inputModalities: ['text'] },
+  ]
+  llm.resolveModel = async (provider, id) => ({
+    provider,
+    id,
+    name: id === 'grok-4.6' ? 'Grok 4.6' : 'Grok 4.7',
+    inputModalities: ['text'],
+    context: { contextWindow: 2000 },
+  })
+  assert.deepEqual(await runtime.syncModels(accounts), [])
+  assert.deepEqual(llm.replaces, [['xai-work']])
+  assert.deepEqual(
+    served().get('xai-work').piProvider.getModels().map((model) => model.id),
+    ['grok-4.6', 'grok-4.7'],
+  )
+  assert.deepEqual(await runtime.syncModels(accounts), [])
+  assert.deepEqual(llm.replaces, [['xai-work']])
 })

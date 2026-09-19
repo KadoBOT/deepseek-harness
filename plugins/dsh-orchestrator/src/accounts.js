@@ -597,10 +597,27 @@ export async function createAccountsRuntime({ ctx, log, piAi, adapterClass }) {
     return out
   }
 
-  /** Whether a route set already holds exactly the ids a sync would register. */
-  function sameRouteSet(next) {
-    return next.length === owned.size && next.every((id) => owned.has(id))
+  /** Canonical string for an applied profile set. A change republishes, so the
+   * settings page rebuilds its catalog on the topology event; anything else
+   * rides the live profiles binding the adapter already reads. Model-only
+   * changes must republish too: without the event, the page would keep the
+   * rows the previous sync snapshotted, and the echo terminates because the
+   * answering sync finds nothing changed. */
+  function profilesFingerprint(built) {
+    return JSON.stringify([...built.profiles.values()].map((profile) => [
+      profile.provider,
+      profile.displayName,
+      profile.piProvider.getModels().map((model) => [
+        model.id,
+        model.name ?? null,
+        model.contextWindow ?? null,
+        model.maxTokens ?? null,
+      ]),
+    ]))
   }
+
+  /** Fingerprint of the last applied profiles; nothing applied yet. */
+  let appliedFingerprint = null
 
   function applyProfiles(accounts) {
     const built = buildAccountProfiles({ accounts, builtins: piAi.builtinProviders(), inherited })
@@ -614,18 +631,18 @@ export async function createAccountsRuntime({ ctx, log, piAi, adapterClass }) {
       problems = conflicts
       return problems
     }
+    const fingerprint = profilesFingerprint(built)
     if (handle === undefined) {
       profiles = built.profiles
       problems = built.problems
+      appliedFingerprint = fingerprint
       if (next.length === 0) return problems
       handle = ctx.llm.registerAdapter(next, adapter)
       owned = new Set(next)
       return problems
     }
-    // The adapter reads the profiles binding live, so resolved models land
-    // without republishing: replacing identical routes would announce a
-    // topology change the change-listener answers with another sync.
-    if (!sameRouteSet(next)) handle.replace(next)
+    if (fingerprint !== appliedFingerprint) handle.replace(next)
+    appliedFingerprint = fingerprint
     profiles = built.profiles
     problems = built.problems
     owned = new Set(next)
@@ -644,9 +661,8 @@ export async function createAccountsRuntime({ ctx, log, piAi, adapterClass }) {
       return applyProfiles(accounts)
     },
     /**
-     * Re-resolve base-route models, then apply one account list. The profiles
-     * binding is live to the adapter, so new models serve without
-     * republishing when the route set stands.
+     * Re-resolve base-route models, then apply one account list. Changed rows
+     * republish so selectors reload; an unchanged set rides the live binding.
      * @param {{id: string, product: string, label: string}[]} accounts
      * @returns {Promise<string[]>} problems that kept an account out of the registry.
      */
