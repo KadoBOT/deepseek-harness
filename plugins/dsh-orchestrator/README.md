@@ -53,9 +53,9 @@ The chat dropdown next to it picks the turn's text model (empty resolves live at
 
 ## Reload
 
-Host plugin JS is loaded once per `dsh web` process. After editing `lib/index.js`, `lib/accounts.js`, or `lib/accounts-http.js`, restart that same web process yourself, then refresh http://127.0.0.1:3080. Do not start a second server, and do not kill the GUI from inside a session it is serving. `lib/client.js` is served to the browser on every load, so a refresh alone picks up settings-page changes.
+Host plugin JS is loaded once per `dsh web` process. After editing anything under `src/`, restart that same web process yourself, then refresh http://127.0.0.1:3080. Do not start a second server, and do not kill the GUI from inside a session it is serving. `src/client.js` is served to the browser on every load, so a refresh alone picks up settings-page changes.
 
-Build step: `lib/` holds copies of `src/`; copy every changed file across before restarting. Tests run against `lib/` from the plugin directory:
+There is no build step: plain JS loads straight from `src/`. Tests run against `src/` from the plugin directory:
 
 ```sh
 node --test "tests/*.spec.js"

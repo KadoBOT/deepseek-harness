@@ -10,12 +10,12 @@
     }
   },
   "exports": {
-    ".": "./lib/index.js",
-    "./client": "./lib/client.js",
+    ".": "./src/index.js",
+    "./client": "./src/client.js",
     "./package.json": "./package.json"
   },
   "license": "MIT",
-  "main": "./lib/index.js",
+  "main": "./src/index.js",
   "name": "dsh-orchestrator",
   "private": true,
   "type": "module",

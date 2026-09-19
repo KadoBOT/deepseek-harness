@@ -17,9 +17,9 @@ import {
   normalizeAccount,
   recordFromCredential,
   recordState,
-} from '../lib/accounts.js'
-import { noticeFrame, promptFrame, readJsonBody, registerAccountRoutes, sendJson } from '../lib/accounts-http.js'
-import { readRouteRecord } from '../lib/image.js'
+} from '../src/accounts.js'
+import { noticeFrame, promptFrame, readJsonBody, registerAccountRoutes, sendJson } from '../src/accounts-http.js'
+import { readRouteRecord } from '../src/image.js'
 
 const baseProvider = (overrides = {}) => ({
   id: 'xai',

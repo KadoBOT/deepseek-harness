@@ -23,7 +23,7 @@ import {
   resolveChatModel,
   resolveChatModels,
   secretFromRecord,
-} from '../lib/image.js'
+} from '../src/image.js'
 import {
   advertisesImageGeneration,
   agentOptionsFromRoute,
@@ -40,7 +40,7 @@ import {
   summarizeOutput,
   toolFilterForRole,
   dropUnknownDeniedTools,
-} from '../lib/routes.js'
+} from '../src/routes.js'
 
 test('legacy single-object settings become a one-element chain', () => {
   const live = {

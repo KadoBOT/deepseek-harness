@@ -217,7 +217,7 @@ async function mountSettings(harness, { accounts, routes = {}, status = [], fetc
     ? async () => ({ ok: true, status: 200, async json() { return { accounts: status, problems: [] } } })
     : fetchImpl
   try {
-    await import(`../lib/client.js?case=${Math.random()}`)
+    await import(`../src/client.js?case=${Math.random()}`)
   } finally {
     globalThis.window = previousWindow
     void previousFetch
