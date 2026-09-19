@@ -517,7 +517,7 @@ test('inheriting overlays tuned capacities onto catalog richness', async () => {
       assert.equal(provider, 'xai')
       return [{ id: 'grok-4.6', name: 'Grok 4.6 (tuned)', inputModalities: ['text'] }]
     },
-    async resolveModel(provider, id) {
+    async resolveModelInfo(provider, id) {
       assert.equal(provider, 'xai')
       assert.equal(id, 'grok-4.6')
       return {
@@ -537,13 +537,33 @@ test('inheriting overlays tuned capacities onto catalog richness', async () => {
   assert.deepEqual([...inherited.configuredMaxTokens], [['grok-4.6', 200]])
 })
 
+test('inheritance uses the service model API, never the adapter one', async () => {
+  // The live llm service exposes listModels/resolveModelInfo; resolveModel is
+  // the adapter contract. Depending on the latter silently fell back to the
+  // catalog everywhere while every stubbed test stayed green.
+  const base = baseProvider()
+  let adapterApiTouched = false
+  const llm = {
+    async listModels() { return [{ id: 'grok-4.6', name: 'Grok 4.6' }] },
+    async resolveModelInfo() {
+      return { provider: 'xai', id: 'grok-4.6', name: 'Grok 4.6', context: { contextWindow: 2000 } }
+    },
+    async resolveModel() { adapterApiTouched = true; throw new Error('must not call the adapter API') },
+  }
+
+  const inherited = await inheritProductModels({ llm, base, product: 'xai' })
+
+  assert.equal(adapterApiTouched, false)
+  assert.deepEqual(inherited.models.map((model) => model.id), ['grok-4.6'])
+})
+
 test('inheriting synthesizes ids the catalog does not know', async () => {
   const base = baseProvider({ getModels: () => [] })
   const llm = {
     async listModels() {
       return [{ id: 'grok-next', name: 'Grok Next', inputModalities: ['text', 'video'] }]
     },
-    async resolveModel() {
+    async resolveModelInfo() {
       return {
         provider: 'xai',
         id: 'grok-next',
@@ -585,7 +605,7 @@ test('inheritance yields undefined when the base route is unreadable', async () 
   )
   assert.equal(
     await inheritProductModels({
-      llm: { listModels: async () => [], resolveModel: async () => ({}) },
+      llm: { listModels: async () => [], resolveModelInfo: async () => ({}) },
       base,
       product: 'xai',
     }),
@@ -597,7 +617,7 @@ test('inheritance yields undefined when the base route is unreadable', async () 
     await inheritProductModels({
       llm: {
         listModels: async () => [{ id: 'gone' }],
-        resolveModel: async () => { throw new Error('unknown model') },
+        resolveModelInfo: async () => { throw new Error('unknown model') },
       },
       base,
       product: 'xai',
@@ -631,7 +651,7 @@ test('syncModels resolves base-route models and republishes nothing when routes 
     assert.equal(provider, 'xai')
     return [{ id: 'grok-4.6', name: 'Grok 4.6', inputModalities: ['text'] }]
   }
-  llm.resolveModel = async () => ({
+  llm.resolveModelInfo = async () => ({
     provider: 'xai',
     id: 'grok-4.6',
     name: 'Grok 4.6',
@@ -669,7 +689,7 @@ test('syncModels resolves base-route models and republishes nothing when routes 
     { id: 'grok-4.6', name: 'Grok 4.6', inputModalities: ['text'] },
     { id: 'grok-4.7', name: 'Grok 4.7', inputModalities: ['text'] },
   ]
-  llm.resolveModel = async (provider, id) => ({
+  llm.resolveModelInfo = async (provider, id) => ({
     provider,
     id,
     name: id === 'grok-4.6' ? 'Grok 4.6' : 'Grok 4.7',

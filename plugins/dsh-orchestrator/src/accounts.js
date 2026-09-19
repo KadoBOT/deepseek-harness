@@ -273,7 +273,7 @@ export function recordState(record) {
  */
 export async function inheritProductModels({ llm, base, product }) {
   if (llm === undefined || llm === null
-    || typeof llm.listModels !== 'function' || typeof llm.resolveModel !== 'function') return undefined
+    || typeof llm.listModels !== 'function' || typeof llm.resolveModelInfo !== 'function') return undefined
   let listed
   try {
     listed = await llm.listModels(product)
@@ -296,7 +296,7 @@ export async function inheritProductModels({ llm, base, product }) {
     seen.add(entry.id)
     let resolved
     try {
-      resolved = await llm.resolveModel(product, entry.id)
+      resolved = await llm.resolveModelInfo(product, entry.id)
     } catch {
       // The base route changed between the listing and this read; a model
       // that no longer resolves is dropped rather than served half-known.
