@@ -110,10 +110,11 @@ export async function connectRemote(options: RemoteConnectionOptions): Promise<R
         if (!isObject(body) || body.type !== 'server-response' || body.rpcId !== rpcId || !isObject(body.result)) {
           throw new Error('Remote session list returned an incompatible response')
         }
-        if (body.result.ok !== true || !isObject(body.result.value) || !Array.isArray(body.result.value.items)) {
+        const value = body.result.value
+        if (body.result.ok !== true || !isSessionList(value)) {
           throw new Error('Remote session list was rejected or returned invalid metadata')
         }
-        return body.result.value
+        return value
       })
     },
     async dispose() {
@@ -126,6 +127,10 @@ export async function connectRemote(options: RemoteConnectionOptions): Promise<R
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isSessionList(value: unknown): value is { items: readonly unknown[] } {
+  return isObject(value) && Array.isArray((value as { items?: readonly unknown[] }).items)
 }
 
 async function boundedJson(response: Response, maxBytes: number): Promise<unknown> {

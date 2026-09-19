@@ -1688,7 +1688,7 @@ describe('automatic listener and loader composition', () => {
     })
     let calls = 0
     const overflowError = Object.assign(new Error('summarizer overflow'), { code: CONTEXT_WINDOW_EXCEEDED_CODE })
-    const summarize = vi.spyOn(compact, 'summarize' as never)
+    const summarize = vi.spyOn(compact, 'summarize')
     summarize.mockImplementation(async (_input: SummarizationInput) => {
       calls += 1
       if (calls === 1) throw overflowError
@@ -1712,7 +1712,7 @@ describe('automatic listener and loader composition', () => {
       retainTokens: 900,
     })
     const overflowError = Object.assign(new Error('always overflow'), { code: CONTEXT_WINDOW_EXCEEDED_CODE })
-    vi.spyOn(compact, 'summarize' as never).mockRejectedValue(overflowError)
+    vi.spyOn(compact, 'summarize').mockRejectedValue(overflowError)
     const session = conversation(2)
 
     expect(await recover(ctx, agent(session, MODEL), overflow())).toBe(false)

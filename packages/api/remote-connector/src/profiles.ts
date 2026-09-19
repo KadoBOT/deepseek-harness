@@ -2,6 +2,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { Context } from '@deepseek-ai/cordis'
 
 /** One saved remote target. The profile file never stores the launch token. */
 export interface RemoteProfile {
@@ -84,13 +85,13 @@ export function createProfileStore(ctx: Context, filePath: string): {
       raw = await readFile(filePath, 'utf8')
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-      return
+      return () => {}
     }
     const parsed: unknown = JSON.parse(raw)
     if (typeof parsed !== 'object' || parsed === null || !Array.isArray((parsed as { profiles?: unknown }).profiles)) {
       throw new Error(`profile file ${JSON.stringify(filePath)} does not hold a profiles array`)
     }
-    for (const entry of (parsed as { profiles: unknown }).profiles) {
+    for (const entry of (parsed as { profiles: readonly unknown[] }).profiles) {
       if (typeof entry !== 'object' || entry === null) throw new Error('profile file holds a non-object entry')
       const record = entry as { id?: unknown; baseUrl?: unknown }
       if (typeof record.id !== 'string' || typeof record.baseUrl !== 'string') {
@@ -99,6 +100,7 @@ export function createProfileStore(ctx: Context, filePath: string): {
       assertProfileId(record.id)
       profiles.set(record.id, { id: record.id, baseUrl: record.baseUrl })
     }
+    return () => {}
   }, 'remote-connector: load profiles')
 
   return {

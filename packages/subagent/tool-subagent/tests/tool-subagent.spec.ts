@@ -1646,7 +1646,7 @@ describe('delegation deadline', () => {
       inheritsParentContext: false,
       // Ignores the abort and fails late: both the deadline and the child
       // failure are true, so both belong in the outcome.
-      start: () => ({
+      start: async () => ({
         id: SessionId('latefail-child'),
         localAgent: undefined,
         result: new Promise(resolve => setTimeout(
@@ -1671,7 +1671,7 @@ describe('delegation deadline', () => {
       inheritsParentContext: false,
       // Ignores the abort and finishes late: the work completed, so the
       // outcome stays a success and the fired timer changes nothing.
-      start: () => ({
+      start: async () => ({
         id: SessionId('latesuccess-child'),
         localAgent: undefined,
         result: new Promise(resolve => setTimeout(
@@ -1779,7 +1779,7 @@ describe('delegation deadline', () => {
       capabilities: { ...NO_DEPTH_CAPS },
       inheritsParentContext: false,
       // Ignores the abort and rejects with a bare value after expiry.
-      start: () => ({
+      start: async () => ({
         id: SessionId('rawreject-child'),
         localAgent: undefined,
         result: new Promise((_, reject) => setTimeout(() => {
