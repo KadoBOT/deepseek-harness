@@ -64,7 +64,7 @@ import type {} from '@deepseek-ai/dsh-fs'
 import type {} from '@deepseek-ai/dsh-settings'
 import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
 import { PiAiAdapter } from './adapter.ts'
-import { authContextFrom, credentialStoreFrom, recordKeyFor } from './auth.ts'
+import { authContextFrom, credentialStoreFrom, recordKeyFor, resolveOAuthAccessToken } from './auth.ts'
 import { catalogProvider, catalogProviderIds } from './catalog.ts'
 import { assertServiceable, Config, resolveProfiles } from './config.ts'
 import type { ResolvedPiAiProviderProfile } from './config.ts'
@@ -260,6 +260,10 @@ export function apply(ctx: Context, config: Config): void {
     return {
       headers: profile.headers,
       resolveApiKey: () => resolveApiKey(provider, profile),
+      // An OAuth-only route names no apiKeyEnv, so the key resolver above
+      // answers undefined for it; the Codex models listing authenticates with
+      // the ChatGPT grant instead, borrowed here while it is still valid.
+      resolveOAuthToken: () => resolveOAuthAccessToken(auth.credentials, provider),
     }
   }
   // Interrogating an endpoint is a configuration-time action over a draft, so

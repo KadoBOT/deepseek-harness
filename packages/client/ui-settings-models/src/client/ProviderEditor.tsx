@@ -30,6 +30,7 @@ import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import {
   DeepSeekModelsEditor, modelDrafts, validateDeepSeekModels,
 } from './DeepSeekModelsEditor.tsx'
+import type { DeepSeekModelDraft } from './DeepSeekModelsEditor.tsx'
 import { apiKeyFailure } from './apiKey.ts'
 import { EditorFooter } from './EditorFooter.tsx'
 import { ModelListEditor } from './ModelListEditor.tsx'
@@ -238,6 +239,36 @@ export function ProviderEditor(props: ProviderEditorProps): ReactNode {
     ...probeApi === undefined ? {} : { api: probeApi },
     ...keyValue.length === 0 ? {} : { apiKey: keyValue },
   }
+  // The inherited catalog rows for a pi-ai route without a user models list.
+  // An untouched route serves its adapter defaults, so the editor shows those
+  // rows instead of an empty list: any edit to them materializes an explicit
+  // user list, which is how one broken catalog model is removed or one the
+  // catalog does not know yet is added by hand.
+  const modelsOverridden = schema.hasPath(draft, ['models'])
+  const [inheritedCatalog, setInheritedCatalog] = useState<readonly DeepSeekModelDraft[] | undefined>(undefined)
+  useEffect(() => {
+    if (layout !== 'pi-ai' || props.credentialOnly === true || modelsOverridden) return
+    let stale = false
+    setInheritedCatalog(undefined)
+    void operations.discoverModels(namespace.ns, {
+      provider: props.provider,
+      ...probeBaseURL === undefined ? {} : { baseURL: probeBaseURL },
+      ...probeApi === undefined ? {} : { api: probeApi },
+    }).then((answer) => {
+      if (stale) return
+      if (answer.kind !== 'found') {
+        setInheritedCatalog([])
+        return
+      }
+      setInheritedCatalog(answer.models.map(model => ({
+        id: model.id,
+        ...model.name === undefined ? {} : { name: model.name },
+        ...model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow },
+        ...model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens },
+      })))
+    })
+    return () => { stale = true }
+  }, [layout, modelsOverridden, namespace.ns, operations, probeApi, probeBaseURL, props.credentialOnly, props.provider])
   /**
    * The write for this card, or a failure message. Every edit travels as
    * path ops against the STORED section: the draft comes from the redacted
@@ -338,8 +369,12 @@ export function ProviderEditor(props: ProviderEditorProps): ReactNode {
     // per-route identity for its schema to carry, hence the family test.
     const ownsIdentity = family === 'pi-ai' && props.declared === true
     const customModels = schema.getPath(draft, ['models'])
-    const modelsOverridden = schema.hasPath(draft, ['models'])
-    const models = modelDrafts(modelsOverridden ? customModels : inheritedModels())
+    // A pi-ai route without a user list serves its adapter defaults, which the
+    // effect above loads through discovery; either way the rows on screen are
+    // what the first edit takes over as an explicit list.
+    const models = family === 'pi-ai' && !modelsOverridden && inheritedCatalog !== undefined
+      ? [...inheritedCatalog]
+      : modelDrafts(modelsOverridden ? customModels : inheritedModels())
     const defaultContextWindow = schema.getPath(fallback, ['defaultContextWindow'])
     const defaultMaxTokens = schema.getPath(fallback, ['maxTokens'])
     const keyPlaceholder = keyLocked

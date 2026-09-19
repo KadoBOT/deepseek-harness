@@ -187,6 +187,18 @@ function firstProbe(discover: ReturnType<typeof vi.fn>): unknown {
 }
 
 /**
+ * The most recent interrogation payload. Opening a pi-ai editor without a
+ * user models list loads the inherited catalog first, so a case that then
+ * fetches must read the later call rather than the load.
+ */
+function lastProbe(discover: ReturnType<typeof vi.fn>): unknown {
+  const calls = discover.mock.calls as unknown as [string, Record<string, unknown>][]
+  const call = calls[calls.length - 1]
+  if (call === undefined) throw new Error('no interrogation was recorded')
+  return { settingsNs: call[0], ...call[1] }
+}
+
+/**
  * The first recorded settings write, as one record. The Remote method takes
  * three positional arguments; the cases read the write as a whole, so the
  * regrouping lives here rather than in every assertion.
@@ -383,6 +395,71 @@ describe('model list editing', () => {
     expect(screen.queryByText(en.resetModels)).toBeNull()
   })
 
+  it('lists inherited catalog rows so one broken model can be removed', async () => {
+    const discover = vi.fn(() => Promise.resolve(ok([
+      { id: 'kept', name: 'Kept' },
+      { id: 'broken', name: 'Broken' },
+    ])))
+    const { mutate } = await mountSection({
+      discover,
+      providers: { openai: { baseURL: 'https://proxy.example/v1' } },
+    })
+    openEditor('openai')
+
+    // The untouched route serves its adapter defaults, shown as editable rows
+    // rather than an empty list.
+    await screen.findByDisplayValue('broken')
+    expect(screen.getByText(en.modelsInherited)).toBeTruthy()
+    fireEvent.click(screen.getByLabelText(`${en.removeModel} 2`))
+
+    // Removing an inherited row takes the list over as an explicit catalog.
+    expect(screen.getByText(en.modelsCustomized)).toBeTruthy()
+    fireEvent.click(screen.getByText(en.apply))
+    await waitFor(() => { expect(mutate).toHaveBeenCalled() })
+    expect(firstMutate(mutate).ops)
+      .toEqual([{ op: 'set', path: ['providers', 'openai', 'models'], value: [{ id: 'kept', name: 'Kept' }] }])
+  })
+
+  it('adds a model the catalog does not know yet onto the inherited rows', async () => {
+    const discover = vi.fn(() => Promise.resolve(ok([{ id: 'known' }])))
+    const { mutate } = await mountSection({
+      discover,
+      providers: { openai: { baseURL: 'https://proxy.example/v1' } },
+    })
+    openEditor('openai')
+
+    await screen.findByDisplayValue('known')
+    fireEvent.click(screen.getByRole('button', { name: en.addModel }))
+    fireEvent.change(screen.getByLabelText(`${en.modelId} 2`), { target: { value: 'gpt-6-astra' } })
+    fireEvent.click(screen.getByText(en.apply))
+
+    await waitFor(() => { expect(mutate).toHaveBeenCalled() })
+    expect(firstMutate(mutate).ops)
+      .toEqual([{
+        op: 'set',
+        path: ['providers', 'openai', 'models'],
+        value: [{ id: 'known' }, { id: 'gpt-6-astra' }],
+      }])
+  })
+
+  it('stays hand-editable when the inherited catalog cannot be loaded', async () => {
+    const discover = vi.fn(() => Promise.resolve(
+      fail('directory unreachable', 'llm/model-discovery-rejected'),
+    ))
+    await mountSection({
+      discover,
+      providers: { openai: { baseURL: 'https://proxy.example/v1' } },
+    })
+    openEditor('openai')
+
+    // A refused load leaves the inherited state with no rows rather than a
+    // dead end: the list still says whose it is and offers hand-entry.
+    await waitFor(() => { expect(discover).toHaveBeenCalled() })
+    expect(screen.getByText(en.modelsInherited)).toBeTruthy()
+    expect(screen.getByText(en.modelsEmpty)).toBeTruthy()
+    expect(screen.getByRole('button', { name: en.addModel })).toBeTruthy()
+  })
+
 
   it('keeps expansion on the row it belongs to after an earlier one is removed', async () => {
     await mountSection({
@@ -497,8 +574,15 @@ describe('endpoint interrogation', () => {
     fireEvent.change(screen.getByLabelText(en.baseUrl), { target: { value: 'https://edited.example/v1' } })
     fireEvent.click(screen.getByText(en.fetchModels))
 
-    await waitFor(() => { expect(discover).toHaveBeenCalled() })
-    expect(firstProbe(discover)).toEqual({
+    // The inherited catalog load fires on open; the fetch carrying the typed
+    // key is the later call.
+    await waitFor(() => {
+      expect(discover.mock.calls.some((call) => {
+        const request = (call as unknown as [string, Record<string, unknown>])[1]
+        return request['apiKey'] === 'typed-not-saved'
+      })).toBe(true)
+    })
+    expect(lastProbe(discover)).toEqual({
       settingsNs: 'llm-pi-ai',
       // The route is named, so an adapter that already describes it answers
       // from its own registry rather than the endpoint.
@@ -1447,6 +1531,9 @@ describe('API key field', () => {
 
     fireEvent.change(screen.getByLabelText(en.keyInput), { target: { value: 'sk-\u{1F600}' } })
 
+    // The inherited catalog load fired on open without the key and is cleared
+    // here; only the fetch below is what the refused key must block.
+    discover.mockClear()
     // The host would refuse this before building the header anyway; asking is
     // a round trip to be told what the field already says.
     expect(buttonNamed(en.fetchModels).disabled).toBe(true)
@@ -1461,8 +1548,15 @@ describe('API key field', () => {
     fireEvent.change(screen.getByLabelText(en.keyInput), { target: { value: '  sk-abc  ' } })
     fireEvent.click(screen.getByRole('button', { name: en.fetchModels }))
 
-    await waitFor(() => { expect(discover).toHaveBeenCalled() })
-    expect(firstProbe(discover)).toMatchObject({ apiKey: 'sk-abc' })
+    // The inherited catalog load fires on open without the key; the fetch
+    // carrying the trimmed key is the later call.
+    await waitFor(() => {
+      expect(discover.mock.calls.some((call) => {
+        const request = (call as unknown as [string, Record<string, unknown>])[1]
+        return request['apiKey'] === 'sk-abc'
+      })).toBe(true)
+    })
+    expect(lastProbe(discover)).toMatchObject({ apiKey: 'sk-abc' })
   })
 
   it('reloads the section after creating a hand-declared provider', async () => {

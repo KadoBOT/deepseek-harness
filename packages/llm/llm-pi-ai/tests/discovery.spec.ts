@@ -74,18 +74,55 @@ async function harness(): Promise<Context> {
 }
 
 describe('catalog-route model discovery', () => {
-  it('answers from the installed registry, with capacities and no network call', async () => {
+  it('answers from the installed registry, merging endpoint-only ids after it', async () => {
     const server = await listingServer({ body: JSON.stringify({ data: [{ id: 'from-the-endpoint' }] }) })
     const ctx = await harness()
 
     const models = await ctx.llm.discoverModels('llm-pi-ai', { provider: 'deepseek', baseURL: server.url })
 
     // pi-ai's own registry is the authority for its own providers, and it
-    // carries what a listing endpoint would not disclose.
+    // carries what a listing endpoint would not disclose; the endpoint can
+    // only append ids the catalog does not describe.
+    const catalogIds = getBuiltinModels('deepseek').map(model => model.id)
+    expect(models.map(model => model.id).sort())
+      .toEqual([...catalogIds, 'from-the-endpoint'].sort())
+    expect(models.every(model => (model.contextWindow ?? 0) > 0 || model.id === 'from-the-endpoint')).toBe(true)
+    expect(server.paths).toEqual(['/models'])
+  })
+
+  it('lets the catalog win when the endpoint repeats a known id', async () => {
+    const [known] = getBuiltinModels('deepseek').map(model => model.id)
+    const server = await listingServer({
+      body: JSON.stringify({ data: [{ id: known, name: 'Endpoint Renames It', context_length: 7 }] }),
+    })
+    const ctx = await harness()
+
+    const models = await ctx.llm.discoverModels('llm-pi-ai', { provider: 'deepseek', baseURL: server.url })
+
+    expect(models.filter(model => model.id === known)).toHaveLength(1)
+    expect(models.find(model => model.id === known)?.name).not.toBe('Endpoint Renames It')
+  })
+
+  it('falls back to the catalog when the endpoint probe fails', async () => {
+    const broken = await listingServer({ status: 500, body: '{"error":"boom"}' })
+    const ctx = await harness()
+
+    const models = await ctx.llm.discoverModels('llm-pi-ai', { provider: 'deepseek', baseURL: broken.url })
+
     expect(models.map(model => model.id).sort())
       .toEqual(getBuiltinModels('deepseek').map(model => model.id).sort())
-    expect(models.every(model => (model.contextWindow ?? 0) > 0 && (model.maxTokens ?? 0) > 0)).toBe(true)
-    expect(server.paths).toEqual([])
+  })
+
+  it('falls back to the catalog for a codex route with no usable grant', async () => {
+    const ctx = await harness()
+
+    // No grant is stored, so the Codex backend is never asked: the fake
+    // endpoint below would fail DNS rather than answer.
+    await expect(ctx.llm.discoverModels('llm-pi-ai', {
+      provider: 'openai-codex',
+      baseURL: 'https://gateway.example/v1',
+      api: 'openai-codex-responses',
+    })).resolves.not.toHaveLength(0)
   })
 
   it('needs no endpoint for a route the catalog describes', async () => {
@@ -103,6 +140,319 @@ describe('catalog-route model discovery', () => {
     // The seam refuses a request naming neither, so the module's own guard for
     // that shape is only reachable by calling it directly.
     await expect(discoverModels({})).rejects.toThrow(/set a baseURL/)
+  })
+})
+
+/** A stored profile answering fixed credentials, without mounting the plugin. */
+function profileOf(credentials: { apiKey?: string; oauthToken?: string }, headers?: Record<string, string>) {
+  return () => ({
+    headers,
+    resolveApiKey: async () => credentials.apiKey,
+    resolveOAuthToken: async () => credentials.oauthToken,
+  })
+}
+
+describe('live catalog sources', () => {
+  it('appends Codex-backend models the catalog does not describe', async () => {
+    const server = await listingServer({
+      body: JSON.stringify({
+        models: [
+          { slug: 'codex-next-thing', display_name: 'Codex Next Thing', supported_in_api: true },
+          { slug: 'hidden-lab-model', supported_in_api: false },
+          { display_name: 'no slug anywhere' },
+          { slug: 'flagless-model' },
+          null,
+        ],
+      }),
+    })
+    const catalogIds = getBuiltinModels('openai-codex').map(model => model.id)
+
+    const models = await discoverModels(
+      { provider: 'openai-codex', baseURL: server.url },
+      profileOf({ oauthToken: 'grant-token' }, { 'x-tenant': 't1' }),
+    )
+
+    expect(models.map(model => model.id).sort())
+      .toEqual([...catalogIds, 'codex-next-thing', 'flagless-model'].sort())
+    expect(models.find(model => model.id === 'codex-next-thing')).toMatchObject({ name: 'Codex Next Thing' })
+    expect(server.paths).toEqual(['/models?client_version=0.155.1'])
+    expect(server.headers.map(headers => headers.authorization)).toEqual(['Bearer grant-token'])
+    expect(server.headers.map(headers => headers['x-tenant'])).toEqual(['t1'])
+  })
+
+  it('reaches the Codex backend through the catalog base when the draft names none', async () => {
+    vi.stubGlobal('fetch', async (url: string | URL, init?: RequestInit) => {
+      expect(String(url)).toBe('https://chatgpt.com/backend-api/codex/models?client_version=0.155.1')
+      expect((init?.headers as Headers).get('authorization')).toBe('Bearer grant-token')
+      return new Response(JSON.stringify({ models: [{ slug: 'codex-next-thing' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    const catalogIds = getBuiltinModels('openai-codex').map(model => model.id)
+
+    const models = await discoverModels({ provider: 'openai-codex' }, profileOf({ oauthToken: 'grant-token' }))
+
+    expect(models.map(model => model.id).sort())
+      .toEqual([...catalogIds, 'codex-next-thing'].sort())
+  })
+
+  it('asks nothing without a usable grant on a codex route', async () => {
+    const server = await listingServer({ body: JSON.stringify({ models: [{ slug: 'x' }] }) })
+    const catalogIds = getBuiltinModels('openai-codex').map(model => model.id)
+
+    const models = await discoverModels(
+      { provider: 'openai-codex', baseURL: server.url },
+      profileOf({}),
+    )
+
+    expect(models.map(model => model.id).sort()).toEqual([...catalogIds].sort())
+    expect(server.paths).toEqual([])
+  })
+
+  it('falls back to the catalog when the Codex backend refuses', async () => {
+    const broken = await listingServer({ status: 401, body: '{"error":"bad token"}' })
+    const catalogIds = getBuiltinModels('openai-codex').map(model => model.id)
+
+    const models = await discoverModels(
+      { provider: 'openai-codex', baseURL: broken.url, apiKey: 'typed' },
+      profileOf({ oauthToken: 'grant-token' }),
+    )
+
+    // A typed key is attempted first and cannot fail over to the grant, but
+    // the refusal still costs only the live rows, never the catalog.
+    expect(broken.headers.map(headers => headers.authorization)).toEqual(['Bearer typed'])
+    expect(models.map(model => model.id).sort()).toEqual([...catalogIds].sort())
+  })
+
+  it('names the missing grant for a grantless codex draft', async () => {
+    await expect(discoverModels(
+      { provider: 'acme-codex-clone', baseURL: 'https://gateway.example/v1', api: 'openai-codex-responses' },
+      profileOf({}),
+    )).rejects.toThrow(/no usable grant/)
+  })
+
+  it('reads a Codex-compatible draft endpoint with a typed token', async () => {
+    const server = await listingServer({
+      body: JSON.stringify({ models: [{ slug: 'acme-codex-model', supported_in_api: true }] }),
+    })
+
+    const models = await discoverModels(
+      { baseURL: server.url, api: 'openai-codex-responses', apiKey: 'typed' },
+      profileOf({}),
+    )
+
+    expect(models).toEqual([{ id: 'acme-codex-model', name: 'acme-codex-model' }])
+    expect(server.headers.map(headers => headers.authorization)).toEqual(['Bearer typed'])
+  })
+
+  it('reads a Codex-compatible draft endpoint with a grant token', async () => {
+    const server = await listingServer({
+      body: JSON.stringify({ models: [{ slug: 'acme-codex-model', supported_in_api: true }] }),
+    })
+
+    const models = await discoverModels(
+      { baseURL: server.url, api: 'openai-codex-responses' },
+      profileOf({ oauthToken: 'grant-token' }),
+    )
+
+    expect(models).toEqual([{ id: 'acme-codex-model', name: 'acme-codex-model' }])
+    expect(server.headers.map(headers => headers.authorization)).toEqual(['Bearer grant-token'])
+  })
+
+  it('rejects a Codex reply with no models array', async () => {
+    const server = await listingServer({ body: '{"data":[]}' })
+
+    await expect(discoverModels(
+      { baseURL: server.url, api: 'openai-codex-responses', apiKey: 'typed' },
+      profileOf({}),
+    )).rejects.toThrow(/no "models" array/)
+  })
+
+  it('reads a Google generative listing through a draft endpoint', async () => {
+    const server = await listingServer({
+      body: JSON.stringify({
+        models: [
+          {
+            name: 'models/gemini-new-thing',
+            displayName: 'Gemini New Thing',
+            inputTokenLimit: 1_000_000,
+            outputTokenLimit: 64_000,
+          },
+          { name: 'unprefixed-model' },
+          { name: 'models/' },
+          { name: '' },
+          null,
+        ],
+      }),
+    })
+
+    const models = await discoverModels(
+      { baseURL: server.url, api: 'google-generative-ai', apiKey: 'g-key' },
+      profileOf({}, { 'x-tenant': 't1' }),
+    )
+
+    expect(models).toEqual([
+      { id: 'gemini-new-thing', name: 'Gemini New Thing', contextWindow: 1_000_000, maxTokens: 64_000 },
+      { id: 'unprefixed-model', name: 'unprefixed-model' },
+    ])
+    expect(server.paths).toEqual(['/models?key=g-key'])
+    expect(server.headers.map(headers => headers['x-tenant'])).toEqual(['t1'])
+  })
+
+  it('rejects a Google reply with no models array', async () => {
+    const server = await listingServer({ body: '{"data":[]}' })
+
+    await expect(discoverModels(
+      { baseURL: server.url, api: 'google-generative-ai', apiKey: 'g-key' },
+      profileOf({}),
+    )).rejects.toThrow(/no "models" array/)
+  })
+
+  it('reads a draft Google endpoint for a catalog route', async () => {
+    const server = await listingServer({
+      body: JSON.stringify({
+        models: [{ name: 'models/gemini-new-thing', displayName: 'Gemini New Thing' }],
+      }),
+    })
+    const catalogIds = getBuiltinModels('google').map(model => model.id)
+
+    const models = await discoverModels(
+      { provider: 'google', baseURL: server.url, apiKey: 'g-key' },
+      profileOf({}),
+    )
+
+    expect(models.map(model => model.id).sort())
+      .toEqual([...catalogIds, 'gemini-new-thing'].sort())
+    expect(server.paths).toEqual(['/models?key=g-key'])
+  })
+
+  it('stands on the catalog for a route speaking no readable listing', async () => {
+    const calls: unknown[] = []
+    vi.stubGlobal('fetch', async (...args: unknown[]) => {
+      calls.push(args)
+      throw new Error('must not probe an unreadable protocol')
+    })
+    // Azure has models but no base URL and no readable listing shape.
+    const catalogIds = getBuiltinModels('azure-openai-responses').map(model => model.id)
+    expect(catalogIds.length).toBeGreaterThan(0)
+
+    const models = await discoverModels({ provider: 'azure-openai-responses' }, profileOf({ apiKey: 'k' }))
+
+    expect(models.map(model => model.id).sort()).toEqual([...catalogIds].sort())
+    expect(calls).toEqual([])
+  })
+
+  it('borrows nothing for an unconnected codex route, answering the catalog', async () => {
+    // Mounting the route wires the OAuth-token resolver; with no grant stored
+    // it answers undefined, so the backend is never asked.
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, { providers: { 'openai-codex': {} } })
+
+    await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'openai-codex' })).resolves.not.toHaveLength(0)
+  })
+
+  it('refuses a keyless Google draft probe at the endpoint, not the catalog', async () => {
+    const server = await listingServer({ status: 400, body: '{"error":"key required"}' })
+
+    await expect(discoverModels(
+      { baseURL: server.url, api: 'google-generative-ai' },
+      profileOf({}),
+    )).rejects.toThrow(/answered 400/)
+    expect(server.paths).toEqual(['/models'])
+  })
+
+  it('appends generativelanguage models the catalog predates', async () => {
+    vi.stubGlobal('fetch', async (url: string | URL) => {
+      expect(String(url)).toBe('https://generativelanguage.googleapis.com/v1beta/models?key=g-key')
+      return new Response(JSON.stringify({
+        models: [{ name: 'models/gemini-new-thing', displayName: 'Gemini New Thing' }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    const catalogIds = getBuiltinModels('google').map(model => model.id)
+
+    const models = await discoverModels({ provider: 'google' }, profileOf({ apiKey: 'g-key' }))
+
+    expect(models.map(model => model.id).sort())
+      .toEqual([...catalogIds, 'gemini-new-thing'].sort())
+  })
+
+  it('asks nothing for a google route with no key at all', async () => {
+    const calls: unknown[] = []
+    vi.stubGlobal('fetch', async (...args: unknown[]) => {
+      calls.push(args)
+      throw new Error('must not probe without a key')
+    })
+    const catalogIds = getBuiltinModels('google').map(model => model.id)
+
+    const models = await discoverModels({ provider: 'google' }, profileOf({}))
+
+    expect(models.map(model => model.id).sort()).toEqual([...catalogIds].sort())
+    expect(calls).toEqual([])
+  })
+
+  it('falls back to the catalog when the Google listing fails', async () => {
+    vi.stubGlobal('fetch', async () => new Response('{"error":"boom"}', { status: 500 }))
+    const catalogIds = getBuiltinModels('google').map(model => model.id)
+
+    const models = await discoverModels({ provider: 'google' }, profileOf({ apiKey: 'g-key' }))
+
+    expect(models.map(model => model.id).sort()).toEqual([...catalogIds].sort())
+  })
+
+  it('asks the catalog endpoint for an untouched route with a stored key', async () => {
+    vi.stubGlobal('fetch', async (url: string | URL, init?: RequestInit) => {
+      expect(String(url)).toBe('https://api.deepseek.com/models')
+      expect((init?.headers as Headers).get('authorization')).toBe('Bearer stored-key')
+      return new Response(JSON.stringify({ data: [{ id: 'deepseek-new-thing' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    const catalogIds = getBuiltinModels('deepseek').map(model => model.id)
+
+    const models = await discoverModels({ provider: 'deepseek' }, profileOf({ apiKey: 'stored-key' }))
+
+    expect(models.map(model => model.id).sort())
+      .toEqual([...catalogIds, 'deepseek-new-thing'].sort())
+  })
+
+  it('answers from the catalog when the stored credential is missing', async () => {
+    const calls: unknown[] = []
+    vi.stubGlobal('fetch', async (...args: unknown[]) => {
+      calls.push(args)
+      throw new Error('must not probe without a credential')
+    })
+    const failing = () => ({
+      headers: undefined,
+      resolveApiKey: async (): Promise<string | undefined> => {
+        throw new Error('MISSING_CREDENTIAL')
+      },
+    })
+    const catalogIds = getBuiltinModels('deepseek').map(model => model.id)
+
+    const models = await discoverModels({ provider: 'deepseek' }, failing)
+
+    expect(models.map(model => model.id).sort()).toEqual([...catalogIds].sort())
+    expect(calls).toEqual([])
+  })
+
+  it('leaves an explicitly foreign protocol to the draft endpoint it belongs to', async () => {
+    const calls: unknown[] = []
+    vi.stubGlobal('fetch', async (...args: unknown[]) => {
+      calls.push(args)
+      throw new Error('must not probe a replaced protocol at the catalog endpoint')
+    })
+    const catalogIds = getBuiltinModels('deepseek').map(model => model.id)
+
+    const models = await discoverModels(
+      { provider: 'deepseek', api: 'anthropic-messages' },
+      profileOf({ apiKey: 'stored-key' }),
+    )
+
+    expect(models.map(model => model.id).sort()).toEqual([...catalogIds].sort())
+    expect(calls).toEqual([])
   })
 })
 
@@ -371,12 +721,12 @@ describe('draft-provider model discovery', () => {
       .rejects.toMatchObject({ code: 'DISCOVERY_FAILED' })
   })
 
-  it.each(['azure-openai-responses', 'openai-codex-responses', 'google-generative-ai'])(
+  it.each(['azure-openai-responses'])(
     'says it cannot interrogate %s rather than guessing a shape',
     async (api) => {
       // Azure authenticates with an `api-key` header and an `api-version`
-      // query despite its OpenAI lineage, and Codex uses OAuth; guessing at
-      // either would report an auth failure as a provider with no models.
+      // query despite its OpenAI lineage; guessing at it would report an auth
+      // failure as a provider with no models.
       const ctx = await harness()
       await expect(ctx.llm.discoverModels('llm-pi-ai', { baseURL: 'https://gateway.example/v1', api }))
         .rejects.toMatchObject({ code: 'DISCOVERY_UNSUPPORTED' })

@@ -651,9 +651,9 @@ interface ToolSchema {
 interface LlmModelDiscoveryRequest {
   /**
    * Route the draft is editing, when it edits an existing one. A route whose
-   * adapter already knows its models answers from that knowledge instead of
-   * asking the endpoint — the adapter's own registry is the better answer, and
-   * it costs no network call.
+   * adapter already knows its models answers from that knowledge first — the
+   * adapter's own registry is the better answer — and a readable draft
+   * endpoint appends the ids that knowledge does not describe.
    */
   provider?: string
   /**

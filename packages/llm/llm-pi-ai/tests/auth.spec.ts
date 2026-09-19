@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LocalCredentialProvider from '@deepseek-ai/dsh-credentials-local'
 import { credentialKey, credentialRef } from '@deepseek-ai/dsh-credentials'
-import { authContextFrom, credentialStoreFrom, recordKeyFor } from '../src/auth.ts'
+import { authContextFrom, credentialStoreFrom, recordKeyFor, resolveOAuthAccessToken } from '../src/auth.ts'
 
 const CODEX = recordKeyFor('openai-codex')
 
@@ -209,5 +209,43 @@ describe('pi-ai ambient auth context', () => {
     await expect(context.fileExists('~/missing')).resolves.toBe(false)
     await expect(context.fileExists(join(dir, 'creds'))).resolves.toBe(true)
     await expect(context.fileExists('~')).resolves.toBe(true)
+  })
+})
+
+describe('OAuth access tokens for configuration-time probes', () => {
+  it('borrows the access token of a valid grant', async () => {
+    const store = credentialStoreFrom(await stored())
+    await store.modify('openai-codex', () => Promise.resolve(
+      { type: 'oauth' as const, access: 'at', refresh: 'rt', expires: Date.now() + 3_600_000 },
+    ))
+
+    await expect(resolveOAuthAccessToken(store, 'openai-codex')).resolves.toBe('at')
+  })
+
+  it('refuses an expiring grant rather than racing its refresh', async () => {
+    const store = credentialStoreFrom(await stored())
+    await store.modify('openai-codex', () => Promise.resolve(
+      { type: 'oauth' as const, access: 'at', refresh: 'rt', expires: Date.now() + 1_000 },
+    ))
+
+    await expect(resolveOAuthAccessToken(store, 'openai-codex')).resolves.toBeUndefined()
+  })
+
+  it.each([
+    ['an absent record', undefined],
+    ['an api-key credential', { type: 'api_key' as const, key: 'sk-live' }],
+    ['a blank access token', {
+      type: 'oauth' as const,
+      access: '',
+      refresh: 'rt',
+      expires: Date.now() + 3_600_000,
+    }],
+  ])('answers undefined for %s', async (_label, credential) => {
+    const store = credentialStoreFrom(await stored())
+    if (credential !== undefined) {
+      await store.modify('openai-codex', () => Promise.resolve(credential))
+    }
+
+    await expect(resolveOAuthAccessToken(store, 'openai-codex')).resolves.toBeUndefined()
   })
 })

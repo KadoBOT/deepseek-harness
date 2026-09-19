@@ -100,6 +100,35 @@ function toRecord(credential: Credential): CredentialRecord {
 }
 
 /**
+ * Margin before `expires` at which a stored OAuth access token counts as
+ * unusable for a side read. Request paths refresh through pi-ai itself; a
+ * configuration-time probe must not trigger that machinery, so it only reuses
+ * a token certain to survive the call.
+ */
+const OAUTH_PROBE_FRESHNESS_MS = 60_000
+
+/**
+ * A valid OAuth access token for one provider, for a configuration-time probe
+ * such as model discovery. Reads only: an absent, foreign-typed, blank, or
+ * expiring grant yields `undefined` rather than a refresh, because the token
+ * format and its IdP exchange stay pi-ai's to own — request paths already
+ * refresh through it, and a probe that cannot borrow a fresh token falls back
+ * to the installed catalog instead of failing.
+ * @param store - the pi-ai credential store over harness records.
+ * @param providerId - pi-ai's own provider id, which is also the route key.
+ * @returns the access token, or `undefined` when no usable one is stored.
+ */
+export async function resolveOAuthAccessToken(
+  store: CredentialStore,
+  providerId: string,
+): Promise<string | undefined> {
+  const credential = await store.read(providerId)
+  if (credential?.type !== 'oauth') return undefined
+  if (credential.expires <= Date.now() + OAUTH_PROBE_FRESHNESS_MS) return undefined
+  return credential.access.length > 0 ? credential.access : undefined
+}
+
+/**
  * The credential service, or the failure that names what is missing. Reads
  * answer "nothing stored" without a service, because a composition with no
  * credential plane genuinely holds no credential; writes refuse, because a

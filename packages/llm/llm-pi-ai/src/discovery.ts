@@ -2,22 +2,28 @@
  * Answering "which models can this provider serve?" for the configuration
  * surface's "fetch available models" action.
  *
- * A route the installed pi-ai catalog ships is answered **from that catalog**,
- * with no network call at all: pi-ai's registry is the authoritative list for
- * its own providers, and it carries the capacities a listing endpoint would
- * not disclose. Only a route the catalog does not describe — a gateway, a
- * self-hosted server — is interrogated over the wire.
+ * A route the installed pi-ai catalog ships answers from that catalog first:
+ * pi-ai's registry is the authoritative list for its own providers, and it
+ * carries the capacities a listing endpoint would not disclose. Then a live
+ * source is consulted and any ids the catalog does not describe are appended
+ * as extra candidates, so a provider's newest release is adoptable before the
+ * installed pi-ai catches up. Which live source depends on the route: a draft
+ * or catalog endpoint speaking an OpenAI-compatible, Anthropic Messages, or
+ * Google generative protocol is read through its native listing; the Codex
+ * route is read through the Codex backend's own `/models` with the ChatGPT
+ * grant. A probe that fails for
+ * any reason falls back to the catalog rather than denying the user the rows
+ * that are known to exist. Only a route the catalog does not describe — a
+ * gateway, a self-hosted server — is interrogated over the wire alone.
  *
- * Neither path is a catalog refresh. Nothing here is stored: the request
+ * No path here is a catalog refresh. Nothing here is stored: the request
  * carries a draft the user is still editing, and the reply is candidate
  * metadata the surface offers for adoption. `settings.yaml` remains the only
  * thing that decides what a route serves.
  *
- * OpenAI-compatible and Anthropic Messages protocols are interrogated through
- * their native model-listing endpoints. The parser accepts the standard
- * `data` array and the enriched `models` map some compatible gateways expose.
- * Every other protocol reports that it cannot be interrogated so the surface
- * falls back to hand-entry rather than guessing its response fields.
+ * OAuth-only and exotic protocols with no readable listing report that they
+ * cannot be interrogated so the surface falls back to hand-entry rather than
+ * guessing their response fields.
  *
  * @module dsh-llm-pi-ai/discovery
  */
@@ -25,22 +31,37 @@
 import { INVALID_CREDENTIAL_CODE, LlmError, normalizeApiKey } from '@deepseek-ai/dsh-llm'
 import type { LlmDiscoveredModel, LlmModelDiscoveryOperation } from '@deepseek-ai/dsh-llm'
 import { attributionHeaders } from '@deepseek-ai/dsh-llm'
-import { catalogModels } from './catalog.ts'
+import { catalogModels, catalogProvider } from './catalog.ts'
 
 /**
- * Protocols whose model listing this module can read. OpenAI protocols use
+ * Protocols read through the shared endpoint probe below. OpenAI protocols use
  * bearer auth at `GET {baseURL}/models`; Anthropic Messages uses `x-api-key`
  * and `anthropic-version` at its native `GET /v1/models`. Azure is absent
  * despite its OpenAI lineage — it authenticates with an `api-key` header and
- * requires an `api-version` query — and Codex authenticates through OAuth;
- * guessing at either would report an authentication failure as a provider
- * with no models. pi-ai's remaining protocols are absent for the same reason.
+ * requires an `api-version` query — and pi-ai's remaining protocols are absent
+ * for want of a readable listing; guessing at any of them would report an
+ * authentication failure as a provider with no models. Google and Codex have
+ * their own probes further below.
  */
 const LISTABLE_PROTOCOLS: ReadonlySet<string> = new Set([
   'anthropic-messages',
   'openai-completions',
   'openai-responses',
 ])
+
+/** Google's generative protocol: `GET {baseURL}/models` with a keyed query, answering a `{models[]}` envelope. */
+const GOOGLE_PROTOCOL = 'google-generative-ai'
+
+/** The Codex backend's wire protocol, served with ChatGPT OAuth rather than an API key. */
+const CODEX_PROTOCOL = 'openai-codex-responses'
+
+/**
+ * Informational client version the Codex backend requires as a `client_version`
+ * query on its models listing. The value is telemetry the backend may gate
+ * minimums on, so it names a recent Codex CLI; a rejection falls back to the
+ * catalog like any other probe failure.
+ */
+const CODEX_CLIENT_VERSION = '0.155.1'
 
 /** Stable API version required by Anthropic's model-listing endpoint. */
 const ANTHROPIC_VERSION = '2023-06-01'
@@ -107,7 +128,7 @@ function label(...candidates: readonly unknown[]): string | undefined {
  * Join the endpoint base with the protocol's listing path. The base is
  * treated as a prefix rather than a URL to resolve against, so a deployment
  * path such as `https://gateway.example/openai/v1` keeps its segments instead
- * of losing them to `URL` resolution. OpenAI protocols list at
+ * of losing them to `URL` resolution. OpenAI and Google protocols list at
  * `{baseURL}/models`. Anthropic lists at `{root}/v1/models`, where the root is
  * the base without trailing slashes and without one trailing `/v1` segment:
  * gateway documentation publishes both spellings of the same root. Only this
@@ -230,6 +251,75 @@ function readListing(body: unknown): LlmDiscoveredModel[] {
 }
 
 /**
+ * Read a Google generative `{models[]}` reply. Each entry's `name` is a
+ * resource path (`models/gemini-2.0-flash`), so the request id is the segment
+ * after the prefix; an entry without the prefix keeps its whole name rather
+ * than being dropped. Capacities are the documented token limits.
+ */
+function readGoogleListing(body: unknown): LlmDiscoveredModel[] {
+  const listing = body as { models?: unknown } | null
+  const rows = listing?.models
+  if (!Array.isArray(rows)) {
+    throw new LlmError(
+      'the endpoint\'s model listing has no "models" array; enter this provider\'s models by hand',
+      'DISCOVERY_FAILED',
+    )
+  }
+  const models: LlmDiscoveredModel[] = []
+  for (const raw of rows) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) continue
+    const entry = raw as { name?: unknown; displayName?: unknown; inputTokenLimit?: unknown; outputTokenLimit?: unknown }
+    if (typeof entry.name !== 'string' || entry.name.length === 0) continue
+    const id = entry.name.startsWith('models/') ? entry.name.slice('models/'.length) : entry.name
+    if (id.length === 0) continue
+    const name = label(entry.displayName) ?? id
+    const contextWindow = capacity(entry.inputTokenLimit)
+    const maxTokens = capacity(entry.outputTokenLimit)
+    models.push({
+      id,
+      name,
+      ...contextWindow === undefined ? {} : { contextWindow },
+      ...maxTokens === undefined ? {} : { maxTokens },
+    })
+  }
+  return models
+}
+
+/**
+ * Read a Codex backend `{models[]}` reply. The request id is the `slug`; rows
+ * the backend marks `supported_in_api: false` exist in the catalog but cannot
+ * be requested, so only they are dropped — a row without the flag is kept, and
+ * a row without any usable id is skipped like any other malformed entry.
+ */
+function readCodexListing(body: unknown): LlmDiscoveredModel[] {
+  const listing = body as { models?: unknown } | null
+  const rows = listing?.models
+  if (!Array.isArray(rows)) {
+    throw new LlmError(
+      'the endpoint\'s model listing has no "models" array; enter this provider\'s models by hand',
+      'DISCOVERY_FAILED',
+    )
+  }
+  const models: LlmDiscoveredModel[] = []
+  for (const raw of rows) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) continue
+    const entry = raw as {
+      slug?: unknown
+      id?: unknown
+      name?: unknown
+      display_name?: unknown
+      displayName?: unknown
+      supported_in_api?: unknown
+    }
+    if (entry.supported_in_api === false) continue
+    const id = label(entry.slug, entry.id, entry.name)
+    if (id === undefined) continue
+    models.push({ id, name: label(entry.display_name, entry.displayName, entry.name) ?? id })
+  }
+  return models
+}
+
+/**
  * Accept one probe key, or refuse it before the header is built. Without this
  * the `fetch` below would throw a ByteString `TypeError` that this function's
  * catch reports as `could not reach <url>` — blaming the network for a local,
@@ -254,89 +344,49 @@ export interface StoredModelDiscoveryProfile {
   readonly headers: Readonly<Record<string, string>> | undefined
   /** Resolve the named route's credential only when the draft carries none. */
   readonly resolveApiKey: () => Promise<string | undefined>
+  /**
+   * Borrow a valid OAuth access token for the named route, for listings that
+   * authenticate with the account grant rather than an API key. Absent when
+   * the wiring predates the field; resolves undefined when no usable grant is
+   * stored, so OAuth-only routes without a connection fall back to the catalog.
+   */
+  readonly resolveOAuthToken?: () => Promise<string | undefined>
 }
 
 /**
- * Interrogate one draft provider endpoint for the models it advertises.
- * @param request - the endpoint, protocol, and one-shot credential to use.
- * @param storedProfile - Host-owned headers and lazy credential resolution for
- *   the named route. It is read only on the path that reaches the network; the
- *   credential is resolved only when the draft carries none.
- * @returns the advertised models in endpoint order.
- * @throws LlmError when the protocol has no readable listing, the endpoint
- *   refuses or fails the request, or the reply is not a model listing.
+ * GET one listing URL and parse its JSON body. The byte ceiling holds on the
+ * bytes actually read, and a truncated listing is refused rather than parsed,
+ * because a partial model list adopted as configuration would silently drop
+ * models the provider serves.
+ * @param url - the listing URL.
+ * @param headers - the request headers.
+ * @param signal - caller cancellation; settles promptly after it aborts.
+ * @param authFailureHint - appended to a 401/403 diagnostic, naming what to check.
+ * @returns the parsed body.
+ * @throws LlmError when the request fails, the reply is not OK or not JSON, or it overgrows the ceiling.
  */
-export async function discoverModels(
-  request: LlmModelDiscoveryOperation,
-  storedProfile?: () => StoredModelDiscoveryProfile | undefined,
-): Promise<readonly LlmDiscoveredModel[]> {
-  // A catalog route already has its answer, and a better one: the installed
-  // entries carry context windows and output caps no listing endpoint reports.
-  if (request.provider !== undefined) {
-    const installed = catalogModels(request.provider)
-    if (installed.size > 0) {
-      return [...installed.values()].map(model => ({
-        id: model.id,
-        name: model.name,
-        contextWindow: model.contextWindow,
-        maxTokens: model.maxTokens,
-      }))
-    }
-  }
-  if (request.baseURL === undefined || request.baseURL.length === 0) {
-    throw new LlmError(
-      `pi-ai ships no catalog for provider "${request.provider ?? ''}", so its models can only come from its`
-      + " endpoint; set a baseURL, or enter this provider's models by hand",
-      'DISCOVERY_FAILED',
-    )
-  }
-  // A draft that has not chosen a protocol yet is asked as OpenAI Chat
-  // Completions: it is the shape a gateway is overwhelmingly likely to speak,
-  // and the alternative — refusing until the field is filled — would withhold
-  // the action from the case it exists for. The cost is a misdirected message
-  // when the endpoint speaks something else (an Anthropic gateway answers 401,
-  // which reads as a credential problem), and hand-entry remains the way out.
-  const api = request.api ?? 'openai-completions'
-  if (!LISTABLE_PROTOCOLS.has(api)) {
-    throw new LlmError(
-      `pi-ai protocol "${api}" has no model listing this build can read; enter this provider's models by hand`,
-      'DISCOVERY_UNSUPPORTED',
-    )
-  }
-  const url = listingUrl(request.baseURL, api)
-  // A key typed into the form wins: it may replace the stored key that is
-  // failing. The stored profile is asked past the catalog and protocol checks,
-  // and its credential resolver remains lazy so a typed key cannot fail over a
-  // stored credential it supersedes. A route may still authenticate through a
-  // deployment-owned Authorization header when neither key exists.
-  const stored = storedProfile?.()
-  const supplied = request.apiKey ?? await stored?.resolveApiKey()
-  const apiKey = supplied === undefined ? undefined : usableProbeKey(supplied)
+async function fetchJson(
+  url: string,
+  headers: Headers,
+  signal: AbortSignal | undefined,
+  authFailureHint: string,
+): Promise<unknown> {
   let response: Response
   try {
-    const headers = new Headers(stored?.headers === undefined ? undefined : Object.entries(stored.headers))
-    headers.set('accept', 'application/json')
-    if (api === 'anthropic-messages') {
-      headers.set('anthropic-version', ANTHROPIC_VERSION)
-      if (apiKey !== undefined) headers.set('x-api-key', apiKey)
-    } else if (apiKey !== undefined) {
-      headers.set('authorization', `Bearer ${apiKey}`)
-    }
-    for (const [name, value] of Object.entries(attributionHeaders())) headers.set(name, value)
     response = await fetch(url, {
       method: 'GET',
       headers,
-      ...request.signal === undefined ? {} : { signal: request.signal },
+      ...signal === undefined ? {} : { signal },
     })
   } catch (error: unknown) {
-    if (request.signal?.aborted) {
+    if (signal?.aborted) {
       throw new LlmError('model discovery aborted by caller', 'ABORTED', { cause: error })
     }
     throw new LlmError(`could not reach ${url}`, 'DISCOVERY_FAILED', { cause: error })
   }
   if (!response.ok) {
     throw new LlmError(
-      `${url} answered ${response.status}${response.status === 401 || response.status === 403 ? '; check the API key' : ''}`,
+      `${url} answered ${response.status}${response.status === 401 || response.status === 403 ? authFailureHint : ''}`,
       'DISCOVERY_FAILED',
     )
   }
@@ -347,16 +397,310 @@ export async function discoverModels(
     // Cancellation during the body read rejects with the abort reason, which
     // may be any value; the caller gets the same coded failure it would have
     // for a cancellation before the request went out.
-    if (request.signal?.aborted) {
+    if (signal?.aborted) {
       throw new LlmError('model discovery aborted by caller', 'ABORTED', { cause: error })
     }
     throw error
   }
-  let body: unknown
   try {
-    body = JSON.parse(text)
+    return JSON.parse(text) as unknown
   } catch (error: unknown) {
     throw new LlmError(`${url} did not answer with JSON`, 'DISCOVERY_FAILED', { cause: error })
   }
-  return readListing(body)
+}
+
+/** The request's key, preferring one typed into the form over the stored credential it may replace. */
+async function probeApiKey(
+  request: LlmModelDiscoveryOperation,
+  stored: StoredModelDiscoveryProfile | undefined,
+): Promise<string | undefined> {
+  // The credential resolver stays lazy so a typed key cannot fail over a
+  // stored credential it supersedes. A route may still authenticate through a
+  // deployment-owned Authorization header when neither key exists.
+  const supplied = request.apiKey ?? await stored?.resolveApiKey()
+  return supplied === undefined ? undefined : usableProbeKey(supplied)
+}
+
+/**
+ * Interrogate one draft provider endpoint for the models it advertises.
+ * Shared by the catalog and non-catalog paths below: the caller has already
+ * decided the protocol is readable and carries a non-empty baseURL.
+ * @param request - the endpoint, protocol, and one-shot credential to use.
+ * @param baseURL - the endpoint to interrogate.
+ * @param storedProfile - Host-owned headers and lazy credential resolution for
+ *   the named route. It is read only on the path that reaches the network; the
+ *   credential is resolved only when the draft carries none.
+ * @returns the advertised models in endpoint order.
+ * @throws LlmError when the endpoint refuses or fails the request, or the
+ *   reply is not a model listing.
+ */
+async function probeEndpoint(
+  request: LlmModelDiscoveryOperation,
+  baseURL: string,
+  storedProfile?: () => StoredModelDiscoveryProfile | undefined,
+): Promise<LlmDiscoveredModel[]> {
+  // A draft that has not chosen a protocol yet is asked as OpenAI Chat
+  // Completions: it is the shape a gateway is overwhelmingly likely to speak,
+  // and the alternative — refusing until the field is filled — would withhold
+  // the action from the case it exists for. The cost is a misdirected message
+  // when the endpoint speaks something else (an Anthropic gateway answers 401,
+  // which reads as a credential problem), and hand-entry remains the way out.
+  const api = request.api ?? 'openai-completions'
+  const url = listingUrl(baseURL, api)
+  // A key typed into the form wins: it may replace the stored key that is
+  // failing. The stored credential resolver stays lazy so a typed key cannot
+  // fail over a stored credential it supersedes. A route may still
+  // authenticate through a deployment-owned Authorization header when neither
+  // key exists.
+  const stored = storedProfile?.()
+  const apiKey = await probeApiKey(request, stored)
+  const headers = new Headers(stored?.headers === undefined ? undefined : Object.entries(stored.headers))
+  headers.set('accept', 'application/json')
+  if (api === 'anthropic-messages') {
+    headers.set('anthropic-version', ANTHROPIC_VERSION)
+    if (apiKey !== undefined) headers.set('x-api-key', apiKey)
+  } else if (apiKey !== undefined) {
+    headers.set('authorization', `Bearer ${apiKey}`)
+  }
+  for (const [name, value] of Object.entries(attributionHeaders())) headers.set(name, value)
+  return readListing(await fetchJson(url, headers, request.signal, '; check the API key'))
+}
+
+/**
+ * Read one Google generative endpoint's `{models[]}` listing. The key travels
+ * as the documented `key` query; the call itself decides whether a missing key
+ * is a keyless attempt or a refusal to ask without one.
+ */
+async function probeGoogle(
+  request: LlmModelDiscoveryOperation,
+  baseURL: string,
+  apiKey: string | undefined,
+  stored: StoredModelDiscoveryProfile | undefined,
+): Promise<LlmDiscoveredModel[]> {
+  const base = baseURL.replace(/\/+$/, '')
+  const url = apiKey === undefined ? `${base}/models` : `${base}/models?key=${encodeURIComponent(apiKey)}`
+  const headers = new Headers(stored?.headers === undefined ? undefined : Object.entries(stored.headers))
+  headers.set('accept', 'application/json')
+  for (const [name, value] of Object.entries(attributionHeaders())) headers.set(name, value)
+  return readGoogleListing(await fetchJson(url, headers, request.signal, '; check the API key'))
+}
+
+/**
+ * Read the Codex backend's own models listing. Authentication is the ChatGPT
+ * account grant, never an API key: the backend serves subscription models no
+ * platform key entitles. The `client_version` query is required telemetry the
+ * CLI always sends.
+ */
+async function probeCodex(
+  request: LlmModelDiscoveryOperation,
+  baseURL: string,
+  token: string,
+  stored: StoredModelDiscoveryProfile | undefined,
+): Promise<LlmDiscoveredModel[]> {
+  const base = baseURL.replace(/\/+$/, '')
+  const url = `${base}/models?client_version=${CODEX_CLIENT_VERSION}`
+  const headers = new Headers(stored?.headers === undefined ? undefined : Object.entries(stored.headers))
+  headers.set('accept', 'application/json')
+  headers.set('authorization', `Bearer ${token}`)
+  for (const [name, value] of Object.entries(attributionHeaders())) headers.set(name, value)
+  return readCodexListing(await fetchJson(url, headers, request.signal, '; check the account connection'))
+}
+
+/** The catalog first, then any endpoint-only ids appended in endpoint order. */
+function mergeModels(
+  catalog: readonly LlmDiscoveredModel[],
+  endpoint: readonly LlmDiscoveredModel[],
+): LlmDiscoveredModel[] {
+  const known = new Set(catalog.map(model => model.id))
+  return [...catalog, ...endpoint.filter(model => !known.has(model.id))]
+}
+
+/**
+ * Interrogate one draft provider endpoint for the models it advertises.
+ * @param request - the endpoint, protocol, and one-shot credential to use.
+ * @param storedProfile - Host-owned headers and lazy credential resolution for
+ *   the named route. It is read only on the path that reaches the network; the
+ *   credential is resolved only when the draft carries none.
+ * @returns the advertised models in endpoint order: the installed catalog
+ *   first, then any live-only ids appended.
+ * @throws LlmError when no catalog describes the route and the protocol has no
+ *   readable listing, the endpoint refuses or fails the request, or the reply
+ *   is not a model listing. A catalog route never throws for a live source it
+ *   cannot read: the probe falls back to the catalog, and hand-entry covers
+ *   what neither knows.
+ */
+export async function discoverModels(
+  request: LlmModelDiscoveryOperation,
+  storedProfile?: () => StoredModelDiscoveryProfile | undefined,
+): Promise<readonly LlmDiscoveredModel[]> {
+  // A catalog route already has its answer, and a better one: the installed
+  // entries carry context windows and output caps no listing endpoint reports.
+  // A live source below can only append ids the catalog does not describe.
+  const provider = request.provider
+  const installed = provider === undefined ? new Map() : catalogModels(provider)
+  const providerBase = provider === undefined ? undefined : catalogProvider(provider)?.baseUrl
+  const catalog: LlmDiscoveredModel[] = [...installed.values()].map(model => ({
+    id: model.id,
+    name: model.name,
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
+  }))
+  if (catalog.length === 0) {
+    if (request.baseURL === undefined || request.baseURL.length === 0) {
+      throw new LlmError(
+        `pi-ai ships no catalog for provider "${request.provider ?? ''}", so its models can only come from its`
+        + " endpoint; set a baseURL, or enter this provider's models by hand",
+        'DISCOVERY_FAILED',
+      )
+    }
+    return probeDraftEndpoint(request, request.baseURL, storedProfile)
+  }
+  // The route's own protocol is its first catalog model's; an explicit draft
+  // protocol the catalog does not speak belongs to a replaced endpoint the
+  // draft would name, and without a draft endpoint there is nothing live of
+  // that protocol to ask.
+  /* v8 ignore next -- installed is non-empty past the early return, so the access cannot miss. */
+  const catalogApi = [...installed.values()][0]?.api
+  if (request.api !== undefined && request.api !== catalogApi) return catalog
+  const api = request.api ?? catalogApi
+  if (api === CODEX_PROTOCOL) return probeCodexRoute(request, providerBase, storedProfile, catalog)
+  if (api === GOOGLE_PROTOCOL) return probeGoogleRoute(request, providerBase, storedProfile, catalog)
+  /* v8 ignore next -- catalogApi exists whenever installed is non-empty. */
+  if (api === undefined) return catalog
+  if (!LISTABLE_PROTOCOLS.has(api)) {
+    // An unreadable protocol cannot be probed, so the catalog stands: guessing
+    // at an OAuth or exotic listing would report an authentication failure as a
+    // provider with no models.
+    return catalog
+  }
+  const draftBase = request.baseURL !== undefined && request.baseURL.length > 0 ? request.baseURL : undefined
+  if (draftBase !== undefined) {
+    try {
+      return mergeModels(catalog, await probeEndpoint(request, draftBase, storedProfile))
+    } catch {
+      // A failing custom endpoint must not deny the user the catalog rows that
+      // are known to exist. The tradeoff is a wrong key reading as a catalog
+      // hit instead of a 401; hand-entry and a corrected key remain the way out.
+      return catalog
+    }
+  }
+  // No draft endpoint: ask the catalog's own, so an untouched route with a
+  // stored key still learns about models its installed pi-ai predates. Without
+  // any credential there is nothing to ask with, and the catalog answers
+  // alone rather than failing over a key the interrogation never needed.
+  /* v8 ignore next -- every catalog route speaking a listable protocol ships a base URL. */
+  if (providerBase === undefined) return catalog
+  try {
+    const stored = storedProfile?.()
+    const supplied = request.apiKey ?? await stored?.resolveApiKey()
+    if (supplied === undefined) return catalog
+    return mergeModels(
+      catalog,
+      await probeEndpoint({ ...request, api, apiKey: supplied }, providerBase, storedProfile),
+    )
+  } catch {
+    return catalog
+  }
+}
+
+/**
+ * Probe the endpoint a draft names. The caller guarantees a non-empty baseURL.
+ * @returns the endpoint's models in its own order.
+ * @throws LlmError when the protocol has no readable listing or the endpoint refuses or fails.
+ */
+async function probeDraftEndpoint(
+  request: LlmModelDiscoveryOperation,
+  baseURL: string,
+  storedProfile?: () => StoredModelDiscoveryProfile | undefined,
+): Promise<readonly LlmDiscoveredModel[]> {
+  // A draft that has not chosen a protocol yet is asked as OpenAI Chat
+  // Completions: it is the shape a gateway is overwhelmingly likely to speak,
+  // and the alternative — refusing until the field is filled — would withhold
+  // the action from the case it exists for. The cost is a misdirected message
+  // when the endpoint speaks something else (an Anthropic gateway answers 401,
+  // which reads as a credential problem), and hand-entry remains the way out.
+  const api = request.api ?? 'openai-completions'
+  if (api === CODEX_PROTOCOL) {
+    const stored = storedProfile?.()
+    const token = request.apiKey !== undefined
+      ? usableProbeKey(request.apiKey)
+      : await stored?.resolveOAuthToken?.()
+    if (token === undefined) {
+      throw new LlmError(
+        'this listing authenticates with the connected ChatGPT account, which has no usable grant;'
+        + ' connect the account or enter this provider\'s models by hand',
+        'DISCOVERY_FAILED',
+      )
+    }
+    return probeCodex(request, baseURL, token, stored)
+  }
+  if (api === GOOGLE_PROTOCOL) {
+    // A named-but-unset credential fails loud here, like every other draft
+    // probe: the form asked for an endpoint interrogation, not a catalog.
+    const stored = storedProfile?.()
+    return probeGoogle(request, baseURL, await probeApiKey(request, stored), stored)
+  }
+  if (!LISTABLE_PROTOCOLS.has(api)) {
+    throw new LlmError(
+      `pi-ai protocol "${api}" has no model listing this build can read; enter this provider's models by hand`,
+      'DISCOVERY_UNSUPPORTED',
+    )
+  }
+  return probeEndpoint(request, baseURL, storedProfile)
+}
+
+/**
+ * Probe the Codex backend for a catalog route. The base is the draft endpoint
+ * when the draft names one, else the catalog's own base with the backend's
+ * `/codex` segment.
+ */
+async function probeCodexRoute(
+  request: LlmModelDiscoveryOperation,
+  providerBase: string | undefined,
+  storedProfile: (() => StoredModelDiscoveryProfile | undefined) | undefined,
+  catalog: readonly LlmDiscoveredModel[],
+): Promise<readonly LlmDiscoveredModel[]> {
+  const draftBase = request.baseURL !== undefined && request.baseURL.length > 0 ? request.baseURL : undefined
+  /* v8 ignore next 3 -- every catalog route speaking the Codex protocol ships a base URL. */
+  const backendBase = providerBase === undefined
+    ? undefined
+    : `${providerBase.replace(/\/+$/, '')}/codex`
+  const base = draftBase ?? backendBase
+  /* v8 ignore next -- reachable only when both bases above are absent, which the ignores above rule out. */
+  if (base === undefined) return catalog
+  try {
+    const stored = storedProfile?.()
+    // A typed key is attempted as a bearer first: it may be a token the grant
+    // flow has not stored. It cannot fail over to the grant — a typed value
+    // supersedes what is stored — but any failure still falls back to the
+    // catalog below rather than denying its rows.
+    const token = request.apiKey !== undefined
+      ? usableProbeKey(request.apiKey)
+      : await stored?.resolveOAuthToken?.()
+    if (token === undefined) return catalog
+    return mergeModels(catalog, await probeCodex(request, base, token, stored))
+  } catch {
+    return catalog
+  }
+}
+
+/** Probe a Google generative endpoint for a catalog route, falling back to the catalog on any failure. */
+async function probeGoogleRoute(
+  request: LlmModelDiscoveryOperation,
+  providerBase: string | undefined,
+  storedProfile: (() => StoredModelDiscoveryProfile | undefined) | undefined,
+  catalog: readonly LlmDiscoveredModel[],
+): Promise<readonly LlmDiscoveredModel[]> {
+  const draftBase = request.baseURL !== undefined && request.baseURL.length > 0 ? request.baseURL : undefined
+  const base = draftBase ?? providerBase
+  /* v8 ignore next -- reachable only with neither base, and every Google-protocol route ships one. */
+  if (base === undefined) return catalog
+  try {
+    const stored = storedProfile?.()
+    const apiKey = await probeApiKey(request, stored)
+    if (apiKey === undefined) return catalog
+    return mergeModels(catalog, await probeGoogle(request, base, apiKey, stored))
+  } catch {
+    return catalog
+  }
 }
