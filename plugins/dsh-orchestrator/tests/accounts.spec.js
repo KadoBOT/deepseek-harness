@@ -12,6 +12,7 @@ import {
   credentialFromRecord,
   createAccountCredentialStore,
   createAccountsRuntime,
+  inheritProductModels,
   jsonImage,
   normalizeAccount,
   recordFromCredential,
@@ -439,18 +440,19 @@ test('syncing accounts registers each one as its own route and never flags itsel
   assert.deepEqual(llm.registered[0].owned, ['xai-work'])
   assert.equal(runtime.problems().length, 0)
 
-  // The same list again is a replace, not a conflict with the route this
-  // registration already owns.
+  // The same list again changes nothing to republish: the adapter reads the
+  // profiles binding live, and republishing identical routes would echo
+  // through the topology listener into another sync.
   assert.deepEqual(runtime.sync([{ id: 'xai-work', product: 'xai', label: 'Grok (work)' }]), [])
-  assert.deepEqual(llm.replaces, [['xai-work']])
+  assert.deepEqual(llm.replaces, [])
 
   // A rename swaps the whole route set atomically.
   assert.deepEqual(runtime.sync([{ id: 'xai-personal', product: 'xai', label: 'Grok personal' }]), [])
-  assert.deepEqual(llm.replaces[1], ['xai-personal'])
+  assert.deepEqual(llm.replaces[0], ['xai-personal'])
 
   // Emptied list: the registration stays live holding no routes.
   assert.deepEqual(runtime.sync([]), [])
-  assert.deepEqual(llm.replaces[2], [])
+  assert.deepEqual(llm.replaces[1], [])
 
   // A route another adapter already serves is reported, and the routes this
   // registration holds stay untouched.
@@ -496,4 +498,168 @@ test('every account route defers to the application request policy', async () =>
     assert.match(res.headers['content-type'], /application\/json/)
   }
   registration.dispose()
+})
+
+test('inheriting overlays tuned capacities onto catalog richness', async () => {
+  const catalogModel = {
+    id: 'grok-4.6',
+    name: 'Grok 4.6',
+    api: 'openai-responses',
+    input: ['text'],
+    cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1000,
+    maxTokens: 100,
+    compat: { marker: 'catalog-compat' },
+  }
+  const base = baseProvider({ getModels: () => [catalogModel] })
+  const llm = {
+    async listModels(provider) {
+      assert.equal(provider, 'xai')
+      return [{ id: 'grok-4.6', name: 'Grok 4.6 (tuned)', inputModalities: ['text'] }]
+    },
+    async resolveModel(provider, id) {
+      assert.equal(provider, 'xai')
+      assert.equal(id, 'grok-4.6')
+      return {
+        provider,
+        id,
+        name: 'Grok 4.6 (tuned)',
+        inputModalities: ['text'],
+        context: { contextWindow: 2000 },
+        defaultMaxTokens: 200,
+      }
+    },
+  }
+
+  const inherited = await inheritProductModels({ llm, base, product: 'xai' })
+
+  assert.deepEqual(inherited.models, [{ ...catalogModel, name: 'Grok 4.6 (tuned)', contextWindow: 2000, maxTokens: 200 }])
+  assert.deepEqual([...inherited.configuredMaxTokens], [['grok-4.6', 200]])
+})
+
+test('inheriting synthesizes ids the catalog does not know', async () => {
+  const base = baseProvider({ getModels: () => [] })
+  const llm = {
+    async listModels() {
+      return [{ id: 'grok-next', name: 'Grok Next', inputModalities: ['text', 'video'] }]
+    },
+    async resolveModel() {
+      return {
+        provider: 'xai',
+        id: 'grok-next',
+        name: 'Grok Next',
+        inputModalities: ['text', 'video'],
+        context: { contextWindow: 5000 },
+      }
+    },
+  }
+
+  const inherited = await inheritProductModels({ llm, base, product: 'xai' })
+
+  // Unknown modalities are dropped rather than forwarded, and the pinned cap
+  // is absent, so the route default sizes the model without becoming a
+  // request default.
+  assert.deepEqual(inherited.models, [{
+    id: 'grok-next',
+    name: 'Grok Next',
+    api: 'openai-completions',
+    input: ['text'],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 5000,
+    maxTokens: 32_768,
+  }])
+  assert.deepEqual([...inherited.configuredMaxTokens], [])
+})
+
+test('inheritance yields undefined when the base route is unreadable', async () => {
+  const base = baseProvider()
+  assert.equal(await inheritProductModels({ llm: undefined, base, product: 'xai' }), undefined)
+  assert.equal(await inheritProductModels({ llm: {}, base, product: 'xai' }), undefined)
+  assert.equal(
+    await inheritProductModels({
+      llm: { listModels: async () => { throw new Error('dormant') } },
+      base,
+      product: 'xai',
+    }),
+    undefined,
+  )
+  assert.equal(
+    await inheritProductModels({
+      llm: { listModels: async () => [], resolveModel: async () => ({}) },
+      base,
+      product: 'xai',
+    }),
+    undefined,
+  )
+  // A model that no longer resolves is dropped; when nothing remains, the
+  // account keeps the installed catalog.
+  assert.equal(
+    await inheritProductModels({
+      llm: {
+        listModels: async () => [{ id: 'gone' }],
+        resolveModel: async () => { throw new Error('unknown model') },
+      },
+      base,
+      product: 'xai',
+    }),
+    undefined,
+  )
+})
+
+test('account profiles serve inherited models with their caps', () => {
+  const catalogModel = {
+    id: 'grok-4.6', name: 'Grok 4.6', api: 'openai-responses', input: ['text'], contextWindow: 1000, maxTokens: 100,
+  }
+  const inheritedModels = [{ ...catalogModel, name: 'Tuned', contextWindow: 2000 }]
+  const { profiles } = buildAccountProfiles({
+    accounts: [{ id: 'xai-work', product: 'xai', label: 'Grok work' }],
+    builtins: [baseProvider({ getModels: () => [catalogModel] })],
+    inherited: new Map([['xai', { models: inheritedModels, configuredMaxTokens: new Map([['grok-4.6', 200]]) }]]),
+  })
+
+  const profile = profiles.get('xai-work')
+  assert.deepEqual(profile.piProvider.getModels(), inheritedModels)
+  assert.deepEqual([...profile.configuredMaxTokens], [['grok-4.6', 200]])
+  // Served rows are copies: mutating one must not corrupt the snapshot.
+  profile.piProvider.getModels()[0].name = 'vandalized'
+  assert.equal(profile.piProvider.getModels()[0].name, 'Tuned')
+})
+
+test('syncModels resolves base-route models and republishes nothing when routes stand', async () => {
+  const llm = fakeLlm()
+  llm.listModels = async (provider) => {
+    assert.equal(provider, 'xai')
+    return [{ id: 'grok-4.6', name: 'Grok 4.6', inputModalities: ['text'] }]
+  }
+  llm.resolveModel = async () => ({
+    provider: 'xai',
+    id: 'grok-4.6',
+    name: 'Grok 4.6',
+    inputModalities: ['text'],
+    context: { contextWindow: 2000 },
+  })
+  let served = null
+  const runtime = await createAccountsRuntime({
+    ctx: { get: (name) => (name === 'llm' ? llm : undefined), llm },
+    piAi: { builtinProviders: () => [baseProvider()], createModels: () => ({ setProvider() {} }) },
+    adapterClass: class FakeAdapter {
+      constructor(input) { served = input.profiles }
+      providerInfo(provider) { return { id: provider, name: provider } }
+      async stream() {}
+    },
+  })
+  const accounts = [{ id: 'xai-work', product: 'xai', label: 'Grok (work)' }]
+
+  assert.deepEqual(await runtime.syncModels(accounts), [])
+  assert.deepEqual(
+    served().get('xai-work').piProvider.getModels().map((model) => model.id),
+    ['grok-4.6'],
+  )
+  assert.equal(served().get('xai-work').piProvider.getModels()[0].contextWindow, 2000)
+  assert.deepEqual(llm.replaces, [])
+
+  // A second pass with identical routes republishes nothing: the listener
+  // answering our own replace would otherwise chase its echo.
+  assert.deepEqual(await runtime.syncModels(accounts), [])
+  assert.deepEqual(llm.replaces, [])
 })

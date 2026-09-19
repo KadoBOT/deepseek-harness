@@ -3,8 +3,11 @@
  *
  * One account is one LLM route of this plugin's own: the account's `product`
  * names the installed pi-ai catalog provider whose endpoint, wire protocol,
- * auth methods, and model list the route borrows, while the account's `id` is
- * the route key and the credential-record id. Two Grok, ChatGPT, or Gemini
+ * and auth methods the route borrows, while the account's `id` is
+ * the route key and the credential-record id. The route's models are inherited
+ * from the served base route of the same product — its ids, order, and tuned
+ * capacities overlaid on catalog richness — falling back to the installed
+ * catalog where the base route is absent. Two Grok, ChatGPT, or Gemini
  * accounts therefore exist side by side as two providers, each with its own
  * stored grant, and any role row can pick either one.
  *
@@ -38,6 +41,20 @@ const ROUTE_ID_PATTERN = /^[a-z][a-z0-9-]*$/
  * resolved profile must carry a positive value.
  */
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
+
+/**
+ * Fallback capacities for an inherited id the installed catalog does not
+ * describe. They mirror dsh-llm-pi-ai's own route defaults for undescribed
+ * models; a resolved capacity always wins over them.
+ */
+const INHERITED_DEFAULT_CONTEXT_WINDOW = 262_144
+const INHERITED_DEFAULT_MAX_TOKENS = 32_768
+
+/** pi-ai request modalities a synthesized model may declare; anything else is dropped, not forwarded. */
+const KNOWN_INPUT_MODALITIES = new Set(['text', 'image'])
+
+/** Fallback wire protocol for an inherited id no catalog entry names. */
+const INHERITED_DEFAULT_API = 'openai-completions'
 
 /** Default request-level base64 image bound; same source as the idle interval. */
 const DEFAULT_MAX_REQUEST_IMAGE_BYTES = 20 * 1024 * 1024
@@ -241,6 +258,91 @@ export function recordState(record) {
 }
 
 /**
+ * The base route's resolved models for one product, converted to pi-ai models
+ * an account route can serve directly. The conversion mirrors how dsh-llm-pi-ai
+ * materializes its own route models: an id the installed catalog knows keeps
+ * the catalog entry whole — reasoning, compat, cost — with the route's tuned
+ * name and context window overlaid, and a pinned output cap becomes both the
+ * model size and the request default. An id the catalog does not know is
+ * synthesized from the route's own protocol with the resolved capacities, so
+ * a custom model on the base route still reaches the account. A product whose
+ * route is absent, unserved, or unreadable yields undefined, and the account
+ * keeps the installed catalog exactly as before.
+ * @param {{llm?: object, base: object, product: string}} input
+ * @returns {Promise<{models: object[], configuredMaxTokens: Map<string, number>} | undefined>}
+ */
+export async function inheritProductModels({ llm, base, product }) {
+  if (llm === undefined || llm === null
+    || typeof llm.listModels !== 'function' || typeof llm.resolveModel !== 'function') return undefined
+  let listed
+  try {
+    listed = await llm.listModels(product)
+  } catch {
+    return undefined
+  }
+  if (!Array.isArray(listed) || listed.length === 0) return undefined
+  const catalog = new Map()
+  const catalogModels = typeof base.getModels === 'function' ? base.getModels() : []
+  for (const model of catalogModels) {
+    if (model !== undefined && model !== null && typeof model.id === 'string') catalog.set(model.id, model)
+  }
+  const catalogApi = [...catalog.values()].find((model) => typeof model.api === 'string')?.api
+  const routeApi = typeof catalogApi === 'string' ? catalogApi : INHERITED_DEFAULT_API
+  const models = []
+  const configuredMaxTokens = new Map()
+  const seen = new Set()
+  for (const entry of listed) {
+    if (entry === undefined || entry === null || typeof entry.id !== 'string' || seen.has(entry.id)) continue
+    seen.add(entry.id)
+    let resolved
+    try {
+      resolved = await llm.resolveModel(product, entry.id)
+    } catch {
+      // The base route changed between the listing and this read; a model
+      // that no longer resolves is dropped rather than served half-known.
+      continue
+    }
+    if (resolved === undefined || resolved === null || typeof resolved !== 'object') continue
+    const name = typeof resolved.name === 'string' && resolved.name.length > 0
+      ? resolved.name
+      : (typeof entry.name === 'string' && entry.name.length > 0 ? entry.name : entry.id)
+    const contextWindow = resolved.context !== undefined && resolved.context !== null
+      && Number.isInteger(resolved.context.contextWindow) && resolved.context.contextWindow > 0
+      ? resolved.context.contextWindow
+      : INHERITED_DEFAULT_CONTEXT_WINDOW
+    const maxTokens = typeof resolved.defaultMaxTokens === 'number'
+      && Number.isInteger(resolved.defaultMaxTokens) && resolved.defaultMaxTokens > 0
+      ? resolved.defaultMaxTokens
+      : undefined
+    const baseModel = catalog.get(entry.id)
+    if (baseModel !== undefined && baseModel !== null && typeof baseModel === 'object') {
+      models.push({
+        ...baseModel,
+        name,
+        contextWindow,
+        ...(maxTokens === undefined ? {} : { maxTokens }),
+      })
+    } else {
+      const input = Array.isArray(resolved.inputModalities)
+        ? resolved.inputModalities.filter((modality) => KNOWN_INPUT_MODALITIES.has(modality))
+        : []
+      models.push({
+        id: entry.id,
+        name,
+        api: routeApi,
+        input: input.length > 0 ? input : ['text'],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow,
+        maxTokens: maxTokens ?? INHERITED_DEFAULT_MAX_TOKENS,
+      })
+    }
+    if (maxTokens !== undefined) configuredMaxTokens.set(entry.id, maxTokens)
+  }
+  if (models.length === 0) return undefined
+  return { models, configuredMaxTokens }
+}
+
+/**
  * The pi-ai provider one account route registers: the catalog provider's
  * endpoint, auth, and model list under the account's own id and name.
  *
@@ -249,15 +351,17 @@ export function recordState(record) {
  * account route does not own.
  * @param {object} base - the installed catalog provider for the account's product.
  * @param {{id: string, label: string}} account
+ * @param {object[] | undefined} inherited - base-route models from
+ * {@link inheritProductModels}, or undefined to serve the installed catalog.
  * @returns {object} a pi-ai `Provider`.
  */
-export function accountProvider(base, account) {
+export function accountProvider(base, account, inherited) {
   return {
     id: account.id,
     name: account.label,
     ...(base.baseUrl === undefined ? {} : { baseUrl: base.baseUrl }),
     auth: base.auth,
-    getModels: () => base.getModels(),
+    getModels: () => (inherited === undefined ? base.getModels() : inherited.map((model) => ({ ...model }))),
     stream: (model, context, options) => base.stream(model, context, options),
     streamSimple: (model, context, options) => base.streamSimple(model, context, options),
   }
@@ -281,10 +385,12 @@ export function accountLoginMethod(base) {
  * The resolved profiles one account set produces, plus what could not be
  * served. A product the installed catalog does not ship is reported rather
  * than registered: a route with no protocol could only fail every request.
- * @param {{accounts: {id: string, product: string, label: string}[], builtins: object[]}} input
+ * An account whose product also names a served base route inherits that
+ * route's resolved models; every other account serves the installed catalog.
+ * @param {{accounts: {id: string, product: string, label: string}[], builtins: object[], inherited?: Map<string, {models: object[], configuredMaxTokens: Map<string, number>}>}} input
  * @returns {{profiles: Map<string, object>, problems: string[]}}
  */
-export function buildAccountProfiles({ accounts, builtins }) {
+export function buildAccountProfiles({ accounts, builtins, inherited }) {
   const profiles = new Map()
   const problems = []
   for (const account of accounts) {
@@ -293,15 +399,16 @@ export function buildAccountProfiles({ accounts, builtins }) {
       problems.push(`account "${account.id}": unknown product "${account.product}"`)
       continue
     }
+    const entry = inherited === undefined ? undefined : inherited.get(account.product)
     profiles.set(account.id, {
       provider: account.id,
       displayName: account.label,
-      piProvider: accountProvider(base, account),
+      piProvider: accountProvider(base, account, entry === undefined ? undefined : entry.models),
       streamIdleTimeoutMs: DEFAULT_STREAM_IDLE_TIMEOUT_MS,
       maxRequestImageBytes: DEFAULT_MAX_REQUEST_IMAGE_BYTES,
       requestImagePixelBudget: DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET,
       requestImageMaxBytes: DEFAULT_REQUEST_IMAGE_MAX_BYTES,
-      configuredMaxTokens: new Map(),
+      configuredMaxTokens: entry === undefined ? new Map() : new Map(entry.configuredMaxTokens),
     })
   }
   return { profiles, problems }
@@ -444,11 +551,13 @@ export function createAccountAuthContext(ctx) {
  * registry refuses a route-less adapter; afterwards an emptied list keeps the
  * registration live holding none.
  * @param {{ctx: object, log?: object, piAi: object, adapterClass?: object}} input
- * @returns {Promise<object>} the runtime, with `sync`, `status`, `connect`, `disconnect`.
+ * @returns {Promise<object>} the runtime, with `sync`, `syncModels`, `status`, `connect`, `disconnect`.
  */
 export async function createAccountsRuntime({ ctx, log, piAi, adapterClass }) {
   const AdapterClass = adapterClass ?? (await import('@deepseek-ai/dsh-llm-pi-ai')).PiAiAdapter
   let profiles = new Map()
+  /** Base-route models by product, refreshed by {@link syncModels}; sync serves whatever snapshot stands. */
+  let inherited = new Map()
   let handle
   let problems = []
   /** Routes this registration currently holds, so a re-sync never reads them as a foreign conflict. */
@@ -471,6 +580,58 @@ export async function createAccountsRuntime({ ctx, log, piAi, adapterClass }) {
     return { models, base }
   }
 
+  /**
+   * Read every distinct product's base-route models for one account list. A
+   * product with no usable inheritance is simply absent from the map, and its
+   * accounts keep the installed catalog.
+   */
+  async function resolveInherited(accounts) {
+    const out = new Map()
+    const products = [...new Set(accounts.map((account) => account.product))]
+    for (const product of products) {
+      const base = piAi.builtinProviders().find((provider) => provider.id === product)
+      if (base === undefined) continue
+      const entry = await inheritProductModels({ llm: ctx.get('llm'), base, product })
+      if (entry !== undefined) out.set(product, entry)
+    }
+    return out
+  }
+
+  /** Whether a route set already holds exactly the ids a sync would register. */
+  function sameRouteSet(next) {
+    return next.length === owned.size && next.every((id) => owned.has(id))
+  }
+
+  function applyProfiles(accounts) {
+    const built = buildAccountProfiles({ accounts, builtins: piAi.builtinProviders(), inherited })
+    const next = [...built.profiles.keys()]
+    const conflicts = []
+    for (const entry of (ctx.get('llm')?.listProviders() ?? [])) {
+      const id = entry && entry.id ? entry.id : String(entry)
+      if (next.includes(id) && !owned.has(id)) conflicts.push(`account route "${id}" is already served by another adapter`)
+    }
+    if (conflicts.length > 0) {
+      problems = conflicts
+      return problems
+    }
+    if (handle === undefined) {
+      profiles = built.profiles
+      problems = built.problems
+      if (next.length === 0) return problems
+      handle = ctx.llm.registerAdapter(next, adapter)
+      owned = new Set(next)
+      return problems
+    }
+    // The adapter reads the profiles binding live, so resolved models land
+    // without republishing: replacing identical routes would announce a
+    // topology change the change-listener answers with another sync.
+    if (!sameRouteSet(next)) handle.replace(next)
+    profiles = built.profiles
+    problems = built.problems
+    owned = new Set(next)
+    return problems
+  }
+
   return {
     /** The llm-pi-ai adapter serving every account route. */
     adapter,
@@ -480,30 +641,18 @@ export async function createAccountsRuntime({ ctx, log, piAi, adapterClass }) {
      * @returns {string[]} problems that kept an account out of the registry.
      */
     sync(accounts) {
-      const built = buildAccountProfiles({ accounts, builtins: piAi.builtinProviders() })
-      const next = [...built.profiles.keys()]
-      const conflicts = []
-      for (const entry of (ctx.get('llm')?.listProviders() ?? [])) {
-        const id = entry && entry.id ? entry.id : String(entry)
-        if (next.includes(id) && !owned.has(id)) conflicts.push(`account route "${id}" is already served by another adapter`)
-      }
-      if (conflicts.length > 0) {
-        problems = conflicts
-        return problems
-      }
-      if (handle === undefined) {
-        profiles = built.profiles
-        problems = built.problems
-        if (next.length === 0) return problems
-        handle = ctx.llm.registerAdapter(next, adapter)
-        owned = new Set(next)
-        return problems
-      }
-      handle.replace(next)
-      profiles = built.profiles
-      problems = built.problems
-      owned = new Set(next)
-      return problems
+      return applyProfiles(accounts)
+    },
+    /**
+     * Re-resolve base-route models, then apply one account list. The profiles
+     * binding is live to the adapter, so new models serve without
+     * republishing when the route set stands.
+     * @param {{id: string, product: string, label: string}[]} accounts
+     * @returns {Promise<string[]>} problems that kept an account out of the registry.
+     */
+    async syncModels(accounts) {
+      inherited = await resolveInherited(accounts)
+      return applyProfiles(accounts)
     },
     /** Problems from the last {@link sync}. */
     problems: () => problems.slice(),

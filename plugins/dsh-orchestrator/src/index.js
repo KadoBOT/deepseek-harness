@@ -146,15 +146,29 @@ export function apply(ctx) {
       const runtime = await createAccountsRuntime({ ctx: llmCtx, log: ctx.logger, piAi })
       if (disposed) return
       accounts = runtime
+      const reportProblems = (problems) => {
+        for (const problem of problems) ctx.logger?.warn?.('dsh-orchestrator: %s', problem)
+      }
+      const reportSyncFailure = (error) => {
+        // A settings change must not fail the settings provider: a route the
+        // registry refuses leaves the previous route set serving.
+        ctx.logger?.warn?.('dsh-orchestrator: account routes were not updated: %s', String(error && error.message ? error.message : error))
+      }
       accountsChanged = () => {
         try {
-          for (const problem of runtime.sync(currentAccounts())) ctx.logger?.warn?.('dsh-orchestrator: %s', problem)
+          reportProblems(runtime.sync(currentAccounts()))
         } catch (error) {
-          // A settings change must not fail the settings provider: a route the
-          // registry refuses leaves the previous route set serving.
-          ctx.logger?.warn?.('dsh-orchestrator: account routes were not updated: %s', String(error && error.message ? error.message : error))
+          reportSyncFailure(error)
+          return
         }
+        // Base-route models resolve asynchronously after the routes stand, so
+        // an account never waits for another adapter's listing to register.
+        void runtime.syncModels(currentAccounts()).then(reportProblems, reportSyncFailure)
       }
+      // Base-route edits must reach the accounts borrowing their models. The
+      // replace guard in sync keeps this from echoing: our own replace answers
+      // with a sync that changes nothing and republishes nothing.
+      llmCtx.on('llm/adapters-updated', () => { accountsChanged() })
       accountsChanged()
       llmCtx.inject(['webServer'], (webCtx) => {
         if (disposed) return

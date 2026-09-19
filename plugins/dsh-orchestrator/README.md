@@ -17,7 +17,7 @@ orchestrator-accounts:
       label: ChatGPT (personal)
 ```
 
-`product` is any installed pi-ai provider — `xai`, `openai-codex`, `openai`, `anthropic`, `google`, and so on. The account borrows that provider's endpoint, wire protocol, auth methods, and model catalog while keeping its own id, name, and stored credential, so two Grok or two ChatGPT accounts appear as two selectable providers in every role row, exactly like two different vendors.
+`product` is any installed pi-ai provider — `xai`, `openai-codex`, `openai`, `anthropic`, `google`, and so on. The account borrows that provider's endpoint, wire protocol, and auth methods while keeping its own id, name, and stored credential, so two Grok or two ChatGPT accounts appear as two selectable providers in every role row, exactly like two different vendors. Its models are inherited from the served base route of the same product — ids, order, and tuned capacities overlaid on catalog richness — falling back to the installed catalog where the base route is absent; editing the base route re-syncs its accounts through `llm/adapters-updated`. Accounts configure no model list of their own and the Models page offers none for them.
 
 **Save accounts** writes the list; the Host registers one route per account immediately (`llm/adapters-updated` refreshes the page's provider lists). **Connect** runs that product's own sign-in — the ChatGPT sign-in for `openai-codex`, "Sign in with SuperGrok or X Premium" for `xai`, an API-key prompt for products that have no OAuth — and streams its notices, links, device codes, and questions into the settings page. The credential is committed on the Host side; only the resulting identity (an email or account id) is shown. **Disconnect** deletes the stored credential.
 
