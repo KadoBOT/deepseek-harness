@@ -632,19 +632,20 @@ export async function createAccountsRuntime({ ctx, log, piAi, adapterClass }) {
       return problems
     }
     const fingerprint = profilesFingerprint(built)
+    const changed = fingerprint !== appliedFingerprint
+    // Commit before any call that can re-enter: the topology listener runs
+    // synchronously inside replace (and registration), so a nested sync must
+    // already observe the new state or it republishes forever.
+    profiles = built.profiles
+    problems = built.problems
+    appliedFingerprint = fingerprint
     if (handle === undefined) {
-      profiles = built.profiles
-      problems = built.problems
-      appliedFingerprint = fingerprint
       if (next.length === 0) return problems
       handle = ctx.llm.registerAdapter(next, adapter)
       owned = new Set(next)
       return problems
     }
-    if (fingerprint !== appliedFingerprint) handle.replace(next)
-    appliedFingerprint = fingerprint
-    profiles = built.profiles
-    problems = built.problems
+    if (changed) handle.replace(next)
     owned = new Set(next)
     return problems
   }

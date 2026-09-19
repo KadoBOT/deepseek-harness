@@ -705,3 +705,46 @@ test('syncModels resolves base-route models and republishes nothing when routes 
   assert.deepEqual(await runtime.syncModels(accounts), [])
   assert.deepEqual(llm.replaces, [['xai-work']])
 })
+
+test('a replace re-entering sync through a topology echo terminates', async () => {
+  // Production answers llm/adapters-updated with a sync, and the registry
+  // emits synchronously inside replace: the nested pass must already observe
+  // the committed state, or it republishes forever and blows the stack.
+  const llm = fakeLlm()
+  llm.listModels = async () => [{ id: 'grok-4.6', name: 'Grok 4.6', inputModalities: ['text'] }]
+  llm.resolveModelInfo = async () => ({
+    provider: 'xai',
+    id: 'grok-4.6',
+    name: 'Grok 4.6',
+    inputModalities: ['text'],
+    context: { contextWindow: 2000 },
+  })
+  const listeners = []
+  const rawRegister = llm.registerAdapter.bind(llm)
+  llm.registerAdapter = (routes, adapter) => {
+    const handle = rawRegister(routes, adapter)
+    const rawReplace = handle.replace.bind(handle)
+    handle.replace = (next) => {
+      rawReplace(next)
+      for (const listener of [...listeners]) listener()
+    }
+    return handle
+  }
+  let served = null
+  const runtime = await createAccountsRuntime({
+    ctx: { get: (name) => (name === 'llm' ? llm : undefined), llm },
+    piAi: { builtinProviders: () => [baseProvider()], createModels: () => ({ setProvider() {} }) },
+    adapterClass: class FakeAdapter {
+      constructor(input) { served = input.profiles }
+      providerInfo(provider) { return { id: provider, name: provider } }
+      async stream() {}
+    },
+  })
+  const accounts = [{ id: 'xai-work', product: 'xai', label: 'Grok (work)' }]
+
+  assert.deepEqual(runtime.sync(accounts), [])
+  listeners.push(() => runtime.sync(accounts))
+  assert.deepEqual(await runtime.syncModels(accounts), [])
+  assert.deepEqual(llm.replaces.length, 1)
+  assert.equal(served().get('xai-work').piProvider.getModels()[0].contextWindow, 2000)
+})
