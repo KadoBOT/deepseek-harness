@@ -9,14 +9,15 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { requestError, type Http } from './http.ts'
 
-/** Google OAuth endpoints. No credential is bundled: shipping a shared client
- * secret would publish it to every checkout, so the Code Assist flow stays
- * broken until these arrive from runtime configuration. */
+/** Google OAuth endpoints. No credential is bundled: a hardcoded client secret
+ * trips push protection and ships a shared secret to every checkout, so these
+ * stay placeholders and the Code Assist flow stays broken until real values
+ * arrive from runtime configuration. */
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const GOOGLE_USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo'
-const GOOGLE_CLIENT_ID = ''
-const GOOGLE_CLIENT_SECRET = ''
+const GOOGLE_CLIENT_ID = 'google-oauth-client-id'
+const GOOGLE_CLIENT_SECRET = 'google-oauth-client-secret'
 const GOOGLE_SCOPES = 'https://www.googleapis.com/auth/cloud-platform'
   + ' https://www.googleapis.com/auth/userinfo.email'
   + ' https://www.googleapis.com/auth/userinfo.profile'
